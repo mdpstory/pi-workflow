@@ -6,7 +6,13 @@
  *   2. Role-based path allowlist that hard-blocks write/edit
  *   3. CLR gate that hard-blocks write/edit while any OPEN CLR names current or upstream stage
  *
- * Role is read from env PI_WORKFLOW_ROLE (default: "director").
+ * Role is read from env PI_WORKFLOW_ROLE. Two independent defaults:
+ *   - Tool-body permission checks (e.g. "director only") default to "director" when unset —
+ *     see role().
+ *   - The write/edit gate in the tool_call hook does NOT default at all: when
+ *     PI_WORKFLOW_ROLE is unset, roleOrNull() is null and the hook exits immediately,
+ *     meaning writes are completely ungated (not even director-restricted). Only set
+ *     PI_WORKFLOW_ROLE for sessions that should actually be gated.
  * State: .workflow/<id>/state.json, .workflow/<id>/clr-index.json
  * Artifacts (per-workflow, .workflow/<id>/artifacts/): plan.md, tasks.md, research.md,
  *            decisions.md, clarifications.md, progress.md, review.md, test-report.md, changelog.md
@@ -75,6 +81,8 @@ director: [/^.*$/], // director may write any state file within its own namespac
 };
 
 // Artifact md files. Anything not in this set is treated as "source" and allowed for engineer.
+// NOTE: progress.md is deliberately excluded — it's auto-rendered by saveState() straight to
+// .workflow/<id>/progress.md (not artifacts/), so it must never be stubbed or hand-edited.
 const ARTIFACT_MDS = new Set([
 	"plan.md",
 	"tasks.md",
@@ -82,7 +90,6 @@ const ARTIFACT_MDS = new Set([
 	"architecture.md",
 	"decisions.md",
 	"clarifications.md",
-	"progress.md",
 	"review.md",
 	"test-report.md",
 	"changelog.md",
@@ -115,14 +122,53 @@ function repoRoot(): string {
 	return process.cwd();
 }
 // Unique id for this session, stable for the lifetime of the extension process.
-// Each parallel pi session gets its own process → its own .workflow/<id>/ namespace.
-// PI_WORKFLOW_ID overrides for intentional cross-session sharing.
+// Each parallel pi *director* gets its own process → its own .workflow/<id>/ namespace,
+// so multiple independent workflows can run concurrently in the same repo.
+//
+// Resolution order:
+//   1. PI_WORKFLOW_ID env var — explicit override. REQUIRED if you want to run more than
+//      one director concurrently in the same repo (see marker caveat below).
+//   2. Director role, no env var → mint a fresh random id and publish it to
+//      .workflow/.active-id, so this director's own subagents can find it (step 3).
+//      Never *read* the marker as a director — doing so would collapse two independently
+//      launched directors onto the same workflow id/lock and falsely BLOCK the second one.
+//   3. Non-director role (subagent), no env var → read .workflow/.active-id. The
+//      `subagent` tool has no env passthrough — a PI_WORKFLOW_ID=xxx prefix in the task
+//      *text* does NOT set process.env in the spawned process — so this is how a subagent
+//      lands in the SAME namespace as the director that spawned it, without needing the
+//      text convention to actually work.
+//
+// Caveat: the marker is a single global "last active director" pointer, not per-director
+// storage. It converges subagents correctly for the common case (one workflow active at a
+// time). If you deliberately run two directors concurrently in the same repo, set
+// PI_WORKFLOW_ID explicitly for each and pass it through to their subagents' task text
+// (step 1) — the marker alone cannot disambiguate which subagent belongs to which
+// concurrent director.
 const SESSION_ID: string = (() => {
 	if (process.env.PI_WORKFLOW_ID) {
 		const safe = process.env.PI_WORKFLOW_ID.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
 		if (safe) return safe;
 	}
-	return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+	const markerPath = path.join(process.cwd(), ".workflow", ".active-id");
+	const isDirector = (process.env.PI_WORKFLOW_ROLE ?? "director").toLowerCase() === "director";
+	if (!isDirector) {
+		try {
+			const existing = fs.readFileSync(markerPath, "utf8").trim();
+			if (existing) return existing;
+		} catch {
+			// no marker yet (subagent spawned before any director ran here) — mint our own below
+		}
+	}
+	const fresh = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+	if (isDirector) {
+		try {
+			fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+			fs.writeFileSync(markerPath, fresh);
+		} catch {
+			// best-effort; if we can't persist it, subagents just won't converge
+		}
+	}
+	return fresh;
 })();
 function workflowId(): string {
 	return SESSION_ID;
@@ -341,7 +387,9 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 	// Give a helpful hint if the filename looks like a misplaced artifact.
 	const basename = relPath.split("/").pop() || relPath;
 	const hintDir = SHARED_ARTIFACTS.has(basename) ? "shared" : workflowId();
-	const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${hintDir}/artifacts/${basename}?)` : "";
+	const hint = basename === "progress.md"
+		? ` (progress.md is auto-generated at .workflow/${workflowId()}/progress.md — do not write it manually)`
+		: ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${hintDir}/artifacts/${basename}?)` : "";
 	return { ok: false, reason: `${r} may not modify source (${relPath})${hint}` };
 }
 
@@ -485,14 +533,18 @@ export default function (pi: ExtensionAPI) {
 			const target = params.stage as Stage;
 			const idx = stageIndex(target);
 			if (idx > 0) {
-				const prev = STAGES[idx - 1];
-				// task-breakdown may run right after research completes (planning ∥ research)
-				const prevOk = state.stages[prev].status === "done";
-				if (!prevOk && !(target === "task-breakdown" && state.stages.planning.status === "done" && state.stages.research.status === "done")) {
-					return deny(`previous stage "${prev}" not done`);
+				// task-breakdown runs after BOTH planning and research (they run in parallel);
+				// every other stage just needs its immediate predecessor done.
+				const prevOk = target === "task-breakdown"
+					? state.stages.planning.status === "done" && state.stages.research.status === "done"
+					: state.stages[STAGES[idx - 1]].status === "done";
+				if (!prevOk) {
+					const need = target === "task-breakdown" ? "planning and research" : STAGES[idx - 1];
+					return deny(`previous stage(s) "${need}" not done`);
 				}
 			}
 			// --- auto-skip chain: fast-forward through any configured skip stages ---
+			fs.mkdirSync(artifactsDir(), { recursive: true }); // guard: ensure dir exists even if wf_init wasn't called first
 			const skip = skipStagesSet();
 			const skippedChain: Stage[] = [];
 			let cur: Stage | null = target;
@@ -532,6 +584,7 @@ export default function (pi: ExtensionAPI) {
 			const hint = [
 				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
 				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole} PI_WORKFLOW_ID=${workflowId()}" and load skill "wf-${delegateRole}".`,
+				`(This id is also auto-shared via .workflow/.active-id, so the subagent lands in the same namespace even though this text is not an env var in its process — keep the prefix for role/readability.)`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
 				`When finished, call wf_stage_complete("${cur}", sha).`,
@@ -687,6 +740,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			rec.bumps += 1;
 			state.rulings[params.key] = rec;
+			// Mirror onto the current stage's retry counter so wf_stage_complete's retry-cap
+			// check and the progress.md "(n/3)" annotation actually reflect real bumps.
+			if (state.current) {
+				state.stages[state.current].retries = (state.stages[state.current].retries ?? 0) + 1;
+			}
 			saveState(state);
 			if (rec.bumps >= 3) {
 				return { content: [{ type: "text", text: `DIRECTOR_RULE: ${params.key} at ${rec.bumps} bumps — director must rule via wf_retry_rule.` }], details: { ok: true, decision: "DIRECTOR_RULE", key: params.key, ...rec } };
@@ -708,6 +766,8 @@ export default function (pi: ExtensionAPI) {
 			rec.ruled += 1;
 			rec.bumps = 0;
 			state.rulings[params.key] = rec;
+			// A ruling resets the current stage's retry counter too, keeping it in sync with bumps.
+			if (state.current) state.stages[state.current].retries = 0;
 			saveState(state);
 			fs.appendFileSync(
 				path.join(artifactsDir(), "decisions.md"),
