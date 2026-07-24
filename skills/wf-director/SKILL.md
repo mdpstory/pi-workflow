@@ -117,7 +117,3 @@ Your own session too. If close, do `wf_status`, ask user to spawn fresh director
 
 You may file `wf_clr_open` too. Answer it yourself in the next turn if it's a routing question.
 
-## Reference
-
-- `ai-workflow-specification.md` — canonical rules.
-- `ai-workflow-pi-plan.md` — design.
