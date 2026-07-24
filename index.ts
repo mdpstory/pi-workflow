@@ -587,7 +587,8 @@ export default function (pi: ExtensionAPI) {
 			for (const md of ARTIFACT_MDS) {
 				const abs = artifactPath(md);
 				const stub = `# ${md.replace(".md", "")}\n\n_empty_\n`;
-if (!fs.existsSync(abs) || fs.readFileSync(abs, "utf8") === stub) fs.writeFileSync(abs, stub);
+const content = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+if (content === null || content === "" || content === stub) fs.writeFileSync(abs, stub);
 			}
 			return { content: [{ type: "text", text: "workflow initialized" }], details: { ok: true } };
 		},
