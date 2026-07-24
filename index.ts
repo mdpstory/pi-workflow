@@ -872,7 +872,7 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 				`open CLRs: ${clr.open.length ? clr.open.map((c) => `${c.id}(${c.stage})`).join(", ") : "none"}`,
 				lockLine,
 				"",
-				renderProgress(state),
+	
 			];
 			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock } };
 		},
