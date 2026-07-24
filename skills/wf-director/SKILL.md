@@ -68,12 +68,18 @@ subagent({
 
 ```
 wf_stage_start <stage>
-  → spawn a NEW subagent (agent: <role>, task text carries PI_WORKFLOW_ROLE=<role> + skill name; do NOT recruit existing generic/idle sessions via intercom)
-  → wait for role's notify with SHA
-  → read artifact in full
-  → wf_stage_complete <stage> <sha>
-      APPROVED → wf_stage_start <next>
-      BLOCKED  → fix listed errors (usually reassign or resolve CLR), retry
+  → READ THE RESPONSE before doing anything else:
+      • response contains "auto-skipped" → do NOT spawn a subagent.
+        Call wf_stage_complete <stage> sha="auto-skip" immediately, then
+        wf_stage_start <next> (which may itself be skipped — keep reading response).
+      • response contains "stage started" → spawn a NEW subagent (agent: <role>,
+        task text carries PI_WORKFLOW_ROLE=<role> + skill name; do NOT recruit
+        existing generic/idle sessions via intercom)
+          → wait for role's notify with SHA
+          → read artifact in full
+          → wf_stage_complete <stage> <sha>
+              APPROVED → wf_stage_start <next>
+              BLOCKED  → fix listed errors (usually reassign or resolve CLR), retry
 ```
 
 ## Sequential Planning -> Research

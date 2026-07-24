@@ -645,6 +645,8 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
 			resetToolCalls();
 
+			const allSkipped = [...skippedChain, ...freshChain];
+
 			if (!cur) {
 				return ok(`stage(s) skipped: ${allSkipped.join(", ")}. Workflow reached end — no stage in-progress.`);
 			}
@@ -653,7 +655,6 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			const delegateRole = ROLE_FOR_STAGE[cur];
 			const artifacts = ARTIFACT_FOR_STAGE[cur];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
-			const allSkipped = [...skippedChain, ...freshChain];
 			const skippedNote = allSkipped.length ? ` (auto-skipped: ${allSkipped.join(", ")})` : "";
 			const hint = [
 				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
