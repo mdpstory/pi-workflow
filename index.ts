@@ -281,50 +281,11 @@ function clrBlocksStage(clr: ClrIndex, currentStage: Stage | null): { blocked: b
 
 const TOOL_CAP = 50;
 let toolCalls = 0;
-const activityLog: string[] = []; // ring buffer, max 8, newest first
-const MAX_ACTIVITY = 8;
-
-function summariseTool(toolName: string, input: Record<string, unknown>): string {
-	switch (toolName) {
-		case "read": return `read ${shortPath(input.path as string)}`;
-		case "write": return `write ${shortPath(input.path as string)}`;
-		case "edit": return `edit ${shortPath(input.path as string)}`;
-		case "bash": {
-			const cmd = String(input.command ?? "").replace(/\s+/g, " ").slice(0, 50);
-			return `bash ${cmd}`;
-		}
-		case "wf_stage_start": return `→ stage ${input.stage}`;
-		case "wf_stage_complete": return `✓ complete ${input.stage}`;
-		case "wf_clr_open": return `⚠ CLR filed [${input.stage}]`;
-		case "wf_clr_resolve": return `✓ CLR resolved ${input.id}`;
-		default: return toolName;
-	}
-}
-
-function shortPath(p: string | undefined): string {
-	if (!p) return "?";
-	const rel = relFromRepo(p);
-	return rel.startsWith("..") ? path.basename(p) : rel;
-}
-
-function pushActivity(summary: string): void {
-	activityLog.unshift(summary);
-	if (activityLog.length > MAX_ACTIVITY) activityLog.length = MAX_ACTIVITY;
-	try {
-		fetch(`${DASHBOARD_URL}/activity`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ cwd: repoRoot(), activity: [...activityLog], toolCalls }),
-			signal: AbortSignal.timeout(1000),
-		}).catch(() => {});
-	} catch {}
-}
 
 /** Reset tool counter — called when a new stage starts so each stage
  *  gets its own budget instead of sharing one across the entire session. */
 function resetToolCalls(): void {
 	toolCalls = 0;
-	activityLog.length = 0;
 	try {
 		const state = loadState();
 		state.toolCallsThisStage = 0;
@@ -417,7 +378,6 @@ export default function (pi: ExtensionAPI) {
 		if (r0 === null) return undefined;
 
 		toolCalls += 1;
-		pushActivity(summariseTool(event.toolName, event.input as Record<string, unknown>));
 
 		// 50-tool ceiling. Above cap, only allow write/edit so the agent can
 		// mark its artifact `DRAFT — incomplete, split required` and stop.
