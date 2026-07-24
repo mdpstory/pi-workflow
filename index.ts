@@ -7,9 +7,12 @@
  *   3. CLR gate that hard-blocks write/edit while any OPEN CLR names current or upstream stage
  *
  * Role is read from env PI_WORKFLOW_ROLE (default: "director").
- * State: .workflow/state.json, .workflow/clr-index.json
- * Artifacts: plan.md, tasks.md, research.md, architecture.md, decisions.md,
- *            clarifications.md, progress.md, review.md, test-report.md, changelog.md
+ * State: .workflow/<id>/state.json, .workflow/<id>/clr-index.json
+ * Artifacts (per-workflow, .workflow/<id>/artifacts/): plan.md, tasks.md, research.md,
+ *            decisions.md, clarifications.md, progress.md, review.md, test-report.md, changelog.md
+ * Shared artifact (.workflow/shared/artifacts/, one copy for the whole repo across all
+ *            parallel workflow ids — architecture is a codebase property, not a task property):
+ *            architecture.md
  */
 
 import * as crypto from "node:crypto";
@@ -86,6 +89,10 @@ const ARTIFACT_MDS = new Set([
 	"context.md", // shared knowledge cache between agents
 ]);
 
+// Artifacts that live at .workflow/shared/artifacts/ instead of per-workflow.
+// These are properties of the codebase, not of an individual task.
+const SHARED_ARTIFACTS = new Set(["architecture.md"]);
+
 // ---- state ----
 
 interface RetryRec {
@@ -128,6 +135,15 @@ function wfDir(): string {
 }
 function artifactsDir(): string {
 	return path.join(wfDir(), "artifacts");
+}
+function sharedArtifactsDir(): string {
+	return path.join(wfRoot(), "shared", "artifacts");
+}
+/** Resolve the actual path for an artifact, routing shared ones to .workflow/shared/artifacts/. */
+function artifactPath(filename: string): string {
+	return SHARED_ARTIFACTS.has(filename)
+		? path.join(sharedArtifactsDir(), filename)
+		: path.join(artifactsDir(), filename);
 }
 function statePath(): string {
 	return path.join(wfDir(), "state.json");
@@ -263,18 +279,20 @@ function saveState(state: WfState): void {
 
 // ---- gating logic ----
 
-// Returns the path relative to *this session's* .workflow/<id>/ namespace,
-// or null if relPath isn't inside any .workflow/ namespace at all (source code).
-// Returns { foreign: true } info via thrown-free sentinel string when the path
-// belongs to a *different* workflow id — cross-namespace writes are always denied.
-function wfNamespaceRel(relPath: string): { inside: false } | { inside: true; foreign: boolean; inner: string } {
+// Returns the path relative to the relevant .workflow/ namespace:
+//   "own"    — this session's .workflow/<id>/... (foreign=false)
+//   "shared" — .workflow/shared/... (codebase-level artifacts like architecture.md,
+//              reachable and non-foreign for every workflow id)
+//   foreign  — a *different* workflow id's namespace — cross-namespace writes always denied.
+function wfNamespaceRel(relPath: string): { inside: false } | { inside: true; kind: "own" | "foreign" | "shared"; inner: string } {
 	if (!relPath.startsWith(".workflow/")) return { inside: false };
-	const rest = relPath.slice(".workflow/".length); // "<id>/..." or bare (legacy)
+	const rest = relPath.slice(".workflow/".length); // "<id>/..." or "shared/..." or bare (legacy)
 	const slash = rest.indexOf("/");
-	if (slash === -1) return { inside: true, foreign: false, inner: rest }; // e.g. .workflow/director.lock (legacy, treat as own)
+	if (slash === -1) return { inside: true, kind: "own", inner: rest }; // e.g. .workflow/director.lock (legacy, treat as own)
 	const id = rest.slice(0, slash);
 	const inner = rest.slice(slash + 1);
-	return { inside: true, foreign: id !== workflowId(), inner };
+	if (id === "shared") return { inside: true, kind: "shared", inner };
+	return { inside: true, kind: id === workflowId() ? "own" : "foreign", inner };
 }
 
 function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason?: string } {
@@ -285,8 +303,23 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 	if (ns.inside) {
 		// Cross-namespace: never allowed, regardless of role. Keeps concurrent
 		// workflows (different PI_WORKFLOW_ID in the same repo) isolated.
-		if (ns.foreign) {
+		if (ns.kind === "foreign") {
 			return { ok: false, reason: `path belongs to a different workflow namespace than PI_WORKFLOW_ID=${workflowId()}` };
+		}
+
+		// .workflow/shared/artifacts/ — codebase-level artifacts (architecture.md), reachable
+		// from every workflow id. Only artifacts on the SHARED_ARTIFACTS list may live here,
+		// and role allowlist still applies (architect/director may write architecture.md).
+		if (ns.kind === "shared") {
+			const isArtifact = ns.inner.startsWith("artifacts/");
+			const filename = ns.inner.slice("artifacts/".length);
+			if (!isArtifact || !SHARED_ARTIFACTS.has(filename)) {
+				return { ok: false, reason: `.workflow/shared/ only holds shared artifacts (${[...SHARED_ARTIFACTS].join(", ")})` };
+			}
+			const match = allow.some((re) => re.test(ns.inner));
+			return match
+				? { ok: true }
+				: { ok: false, reason: `${r} not permitted to write ${relPath}` };
 		}
 
 		// Non-artifact state files (state.json, clr-index.json, director.lock, progress.md): director only.
@@ -307,7 +340,8 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 	// Others may not touch source.
 	// Give a helpful hint if the filename looks like a misplaced artifact.
 	const basename = relPath.split("/").pop() || relPath;
-	const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${workflowId()}/artifacts/${basename}?)` : "";
+	const hintDir = SHARED_ARTIFACTS.has(basename) ? "shared" : workflowId();
+	const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${hintDir}/artifacts/${basename}?)` : "";
 	return { ok: false, reason: `${r} may not modify source (${relPath})${hint}` };
 }
 
@@ -380,8 +414,8 @@ export default function (pi: ExtensionAPI) {
 
 		// 2. CLR gate — exempt .workflow/<id>/ state files and clarifications.md; artifacts still gated.
 		const ns = wfNamespaceRel(rel);
-		const isWfState = ns.inside && !ns.foreign && !ns.inner.startsWith("artifacts/");
-		const isClarifications = ns.inside && !ns.foreign && ns.inner === "artifacts/clarifications.md";
+		const isWfState = ns.inside && ns.kind === "own" && !ns.inner.startsWith("artifacts/");
+		const isClarifications = ns.inside && ns.kind === "own" && ns.inner === "artifacts/clarifications.md";
 		if (!isWfState && !isClarifications) {
 			const state = loadState();
 			const clr = loadClr();
@@ -430,8 +464,9 @@ export default function (pi: ExtensionAPI) {
 			const state = loadState();
 			saveState(state);
 			writeJson(clrIndexPath(), loadClr());
+			fs.mkdirSync(sharedArtifactsDir(), { recursive: true });
 			for (const md of ARTIFACT_MDS) {
-				const abs = path.join(artifactsDir(), md);
+				const abs = artifactPath(md);
 				if (!fs.existsSync(abs)) fs.writeFileSync(abs, `# ${md.replace(".md", "")}\n\n_empty_\n`);
 			}
 			return { content: [{ type: "text", text: "workflow initialized" }], details: { ok: true } };
@@ -554,7 +589,7 @@ export default function (pi: ExtensionAPI) {
 			// 1. artifact exists — waived for stages configured via PI_WORKFLOW_SKIP_STAGES
 			const autoSkip = skipStagesSet().has(stage);
 			for (const art of autoSkip ? [] : ARTIFACT_FOR_STAGE[stage]) {
-				const abs = path.join(artifactsDir(), art);
+				const abs = artifactPath(art);
 				if (!fs.existsSync(abs) || fs.readFileSync(abs, "utf8").trim() === "" || fs.readFileSync(abs, "utf8").includes("_empty_")) {
 					errors.push(`artifact missing or stub: ${art}`);
 				}

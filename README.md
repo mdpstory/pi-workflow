@@ -69,6 +69,17 @@ When a director delegates to a subagent, it must pass both env vars:
 `PI_WORKFLOW_ROLE=<role> PI_WORKFLOW_ID=<id>` (the `wf_stage_start` delegation
 hint already includes this).
 
+### `architecture.md` is shared across all workflow ids
+
+Every other artifact (plan.md, tasks.md, research.md, review.md, ...) is a
+property of one task and lives under `.workflow/<id>/artifacts/`.
+`architecture.md` is different: it describes the codebase, not a single task,
+so it lives once at `.workflow/shared/artifacts/architecture.md` and every
+parallel workflow id reads and writes the same file. `wf_init` scaffolds it
+there; `wf_stage_complete architecture` checks it there; the Architect role
+(and Director) may write it regardless of `PI_WORKFLOW_ID`. This is
+intentional and not subject to the cross-namespace block above.
+
 ## Testing
 
 ```bash
