@@ -107,17 +107,18 @@ interface ClrIndex {
 function repoRoot(): string {
 	return process.cwd();
 }
-// Sanitized workflow namespace id — lets multiple independent workflows
-// (different features) run concurrently in the same repo, each with its
-// own .workflow/<id>/ lock, state, and artifacts. Default "default" keeps
-// single-workflow usage unchanged.
+// Unique id for this session, stable for the lifetime of the extension process.
+// Each parallel pi session gets its own process → its own .workflow/<id>/ namespace.
+// PI_WORKFLOW_ID overrides for intentional cross-session sharing.
+const SESSION_ID: string = (() => {
+	if (process.env.PI_WORKFLOW_ID) {
+		const safe = process.env.PI_WORKFLOW_ID.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+		if (safe) return safe;
+	}
+	return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+})();
 function workflowId(): string {
-	// Auto-dynamic: each pi session gets its own PI_SESSION_ID, so distinct
-	// sessions never collide on the same workflow namespace/lock unless the
-	// caller explicitly opts into sharing one via PI_WORKFLOW_ID.
-	const raw = process.env.PI_WORKFLOW_ID ?? process.env.PI_SESSION_ID ?? "default";
-	const safe = raw.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
-	return safe || "default";
+	return SESSION_ID;
 }
 function wfRoot(): string {
 	return path.join(repoRoot(), ".workflow");
