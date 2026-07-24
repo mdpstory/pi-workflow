@@ -35,12 +35,12 @@ type Stage = (typeof STAGES)[number];
 const ARTIFACT_FOR_STAGE: Record<Stage, string[]> = {
 	planning: ["plan.md", "tasks.md"],
 	research: ["research.md", "context.md"],
-	"task-breakdown": ["tasks.md"], // director may edit
-	architecture: ["architecture.md"],
-	implementation: [], // source code, no md gate
-	review: ["review.md"],
-	testing: ["test-report.md"],
-	documentation: ["changelog.md"],
+	"task-breakdown": ["tasks.md", "context.md"], // director may edit
+	architecture: ["architecture.md", "context.md"],
+	implementation: ["context.md"], // source code + context
+	review: ["review.md", "context.md"],
+	testing: ["test-report.md", "context.md"],
+	documentation: ["changelog.md", "context.md"],
 };
 
 // Maps each stage to the role that should execute it.
