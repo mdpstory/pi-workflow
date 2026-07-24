@@ -112,7 +112,10 @@ function repoRoot(): string {
 // own .workflow/<id>/ lock, state, and artifacts. Default "default" keeps
 // single-workflow usage unchanged.
 function workflowId(): string {
-	const raw = process.env.PI_WORKFLOW_ID ?? "default";
+	// Auto-dynamic: each pi session gets its own PI_SESSION_ID, so distinct
+	// sessions never collide on the same workflow namespace/lock unless the
+	// caller explicitly opts into sharing one via PI_WORKFLOW_ID.
+	const raw = process.env.PI_WORKFLOW_ID ?? process.env.PI_SESSION_ID ?? "default";
 	const safe = raw.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
 	return safe || "default";
 }
@@ -219,6 +222,15 @@ function relFromRepo(p: string): string {
 }
 function stageIndex(s: string): number {
 	return STAGES.indexOf(s as Stage);
+}
+
+// Stages to auto-skip by default, via PI_WORKFLOW_SKIP_STAGES="review,testing,documentation".
+// wf_stage_start chains through them automatically; wf_stage_complete waives their
+// artifact requirement too.
+function skipStagesSet(): Set<Stage> {
+	const raw = process.env.PI_WORKFLOW_SKIP_STAGES ?? "";
+	const names = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
 }
 
 // ---- progress.md renderer ----
@@ -429,7 +441,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_stage_start",
 		label: "wf_stage_start",
-		description: "Set current stage to <stage>. Director only. Rejects if previous stage not done.",
+		description: "Set current stage to <stage>. Director only. Rejects if previous stage not done. Stages listed in PI_WORKFLOW_SKIP_STAGES (comma-separated) are auto-skipped and chained through.",
 		parameters: Type.Object({ stage: StringEnum([...STAGES]) }),
 		async execute(_id, params) {
 			if (role() !== "director") return deny("director only");
@@ -444,26 +456,51 @@ export default function (pi: ExtensionAPI) {
 					return deny(`previous stage "${prev}" not done`);
 				}
 			}
-			state.current = target;
-			state.stages[target].status = "in-progress";
+			// --- auto-skip chain: fast-forward through any configured skip stages ---
+			const skip = skipStagesSet();
+			const skippedChain: Stage[] = [];
+			let cur: Stage | null = target;
+			while (cur && skip.has(cur)) {
+				state.stages[cur].status = "done";
+				state.stages[cur].sha = "auto-skip";
+				skippedChain.push(cur);
+				cur = nextStage(cur);
+			}
+			if (cur) {
+				state.current = cur;
+				state.stages[cur].status = "in-progress";
+			} else {
+				state.current = null;
+			}
 			saveState(state);
+			if (skippedChain.length) {
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## auto-skip (PI_WORKFLOW_SKIP_STAGES)\n- Skipped: ${skippedChain.join(", ")}\n`,
+				);
+			}
 			acquireOrCheckLock(); // refresh heartbeat; also self-reclaims a stale lock
 
 			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
 			resetToolCalls();
 
+			if (!cur) {
+				return ok(`stage(s) skipped: ${skippedChain.join(", ")}. Workflow reached end — no stage in-progress.`);
+			}
+
 			// Delegation guidance: tell solo directors to spawn a subagent
-			const delegateRole = ROLE_FOR_STAGE[target];
-			const artifacts = ARTIFACT_FOR_STAGE[target];
+			const delegateRole = ROLE_FOR_STAGE[cur];
+			const artifacts = ARTIFACT_FOR_STAGE[cur];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
+			const skippedNote = skippedChain.length ? ` (auto-skipped: ${skippedChain.join(", ")})` : "";
 			const hint = [
 				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
 				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole} PI_WORKFLOW_ID=${workflowId()}" and load skill "wf-${delegateRole}".`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
-				`When finished, call wf_stage_complete("${target}", sha).`,
+				`When finished, call wf_stage_complete("${cur}", sha).`,
 			].join(" ");
-			return ok(`stage started: ${target}${hint}`);
+			return ok(`stage started: ${cur}${skippedNote}${hint}`);
 		},
 	});
 
@@ -513,8 +550,9 @@ export default function (pi: ExtensionAPI) {
 
 			const errors: string[] = [];
 
-			// 1. artifact exists
-			for (const art of ARTIFACT_FOR_STAGE[stage]) {
+			// 1. artifact exists — waived for stages configured via PI_WORKFLOW_SKIP_STAGES
+			const autoSkip = skipStagesSet().has(stage);
+			for (const art of autoSkip ? [] : ARTIFACT_FOR_STAGE[stage]) {
 				const abs = path.join(artifactsDir(), art);
 				if (!fs.existsSync(abs) || fs.readFileSync(abs, "utf8").trim() === "" || fs.readFileSync(abs, "utf8").includes("_empty_")) {
 					errors.push(`artifact missing or stub: ${art}`);

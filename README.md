@@ -30,12 +30,30 @@ pi install -l git:github.com/mdpstory/pi-workflow
 
 Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`).
 
+### Skipping stages by default
+
+Set `PI_WORKFLOW_SKIP_STAGES` to a comma-separated list of stage names to
+auto-skip them every run, e.g. to skip review/testing entirely:
+
+```bash
+PI_WORKFLOW_ROLE=director PI_WORKFLOW_SKIP_STAGES=review,testing pi ...
+```
+
+`wf_stage_start` auto-marks configured stages `done` and fast-forwards to the
+next non-skipped stage (chaining through several in a row if needed).
+`wf_stage_complete` also waives the artifact-exists check for these stages,
+in case they're completed explicitly. This is separate from the per-call
+`skip` param on `wf_stage_complete`, which is a one-off trivial-task escape
+hatch logged to `decisions.md`.
+
 ### Running multiple workflows in the same repo
 
-Set `PI_WORKFLOW_ID` (default `"default"`) to namespace a workflow. Each id
-gets its own isolated `.workflow/<id>/` lock, state, and artifacts, so two
-independent features can each run their own director + role pipeline in the
-same repo/session pair at the same time without colliding:
+Each pi session auto-namespaces its workflow by `PI_SESSION_ID` (falls back
+to `"default"` only if that's also unset), so two independent sessions never
+collide by default — each gets its own isolated `.workflow/<id>/` lock,
+state, and artifacts. Set `PI_WORKFLOW_ID` explicitly only when you want to
+pin a session (or a director's own subagents) to a *shared* workflow
+namespace instead:
 
 ```bash
 # session A — feature
