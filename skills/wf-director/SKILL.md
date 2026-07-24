@@ -9,7 +9,9 @@ Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout,
 
 **Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/`. **Writes:** `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md` (task-breakdown reconciliation only), `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions).
 
-**Forbidden (extension-enforced):** `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`, `.workflow/shared/artifacts/architecture.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/review.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/test-report.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md`, source code.
+**Forbidden, extension-enforced (hard-blocked by the write-gate):** `.workflow/shared/artifacts/architecture.md` (must delegate to Architect), source code.
+
+**Forbidden, convention-only (NOT hard-blocked — discipline required):** `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/review.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/test-report.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md`. The extension does not hard-block writes to these in your own namespace — you must not write them anyway. Only architecture.md and source code have a real code-level backstop.
 
 ## Scope guard
 

@@ -7,14 +7,12 @@
  *   3. CLR gate that hard-blocks write/edit while any OPEN CLR names current or upstream stage
  *
  * Role is read from env PI_WORKFLOW_ROLE (per-process identity — can't be a shared config
- * file since multiple roles run concurrently as separate subagent processes). Two
- * independent defaults:
- *   - Tool-body permission checks (e.g. "director only") default to "director" when unset —
- *     see role().
- *   - The write/edit gate in the tool_call hook does NOT default at all: when
- *     PI_WORKFLOW_ROLE is unset, roleOrNull() is null and the hook exits immediately,
- *     meaning writes are completely ungated (not even director-restricted). Only set
- *     PI_WORKFLOW_ROLE for sessions that should actually be gated.
+ * file since multiple roles run concurrently as separate subagent processes). Unset
+ * PI_WORKFLOW_ROLE now behaves consistently everywhere: it defaults to "director" for both
+ * tool-body permission checks (role()) AND the write/edit gate in the tool_call hook —
+ * see role(). Director's own write scope is itself a narrow allowlist (see ROLE_ALLOW.director
+ * below), so defaulting the hook to director-level gating is safe: an unset-role session gets
+ * the same restrictions an explicit director session would.
  * skipStages is read from a real config file — see "role" key note above vs. skipStages
  * below, which IS a static per-repo setting and lives in .pi/pi-workflow.json /
  * ~/.pi/agent/pi-workflow.json.
@@ -76,7 +74,13 @@ const ROLE_FOR_STAGE: Record<Stage, string> = {
 const ROLE_ALLOW: Record<string, RegExp[]> = {
 	// NOTE: patterns are matched against the path *inside* the current session's
 // .workflow/<id>/ namespace (prefix already stripped) — see isPathAllowedForRole.
-director: [/^.*$/], // director may write any state file within its own namespace
+// Director's non-artifact state files (state.json, clr-index.json, director.lock) are
+// handled by a separate "director only" branch in isPathAllowedForRole and don't need a
+// pattern here. This list therefore only needs to cover the *artifacts* director is
+// actually allowed to write directly — must NOT be a wildcard, or director could write
+// plan.md/research.md/review.md/test-report.md/changelog.md, which are supposed to be
+// hard-blocked (owned by Planner/Scout/Reviewer/QA/Documenter respectively).
+director: [/^artifacts\/decisions\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
 	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
 	scout: [/^artifacts\/research\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
 	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
@@ -223,15 +227,15 @@ function loadConfig(): WfConfig {
 	const p = readJson<WfConfig>(projectPath, {});
 	return { skipStages: p.skipStages ?? g.skipStages };
 }
-// Returns null when PI_WORKFLOW_ROLE is unset — meaning this session is not
-// participating in the workflow at all, so no role gating should apply.
-// Only an explicit PI_WORKFLOW_ROLE=director makes a session the director.
-function roleOrNull(): string | null {
-	const v = process.env.PI_WORKFLOW_ROLE;
-	return v ? v.toLowerCase() : null;
-}
+// PI_WORKFLOW_ROLE unset → defaults to "director" everywhere, consistently: both
+// tool-body permission checks (role()) and the write/edit gate in the tool_call hook
+// use this same function. Director's own write scope is a narrow allowlist (see
+// ROLE_ALLOW.director), so an unset-role session getting director-level gating by
+// default is safe — it can never silently bypass the gate the way an unrestricted
+// null-role short-circuit could.
 function role(): string {
-	return roleOrNull() ?? "director";
+	const v = process.env.PI_WORKFLOW_ROLE;
+	return v ? v.toLowerCase() : "director";
 }
 function readJson<T>(p: string, fallback: T): T {
 	try {
@@ -276,7 +280,12 @@ function readLock(): LockInfo | null {
 }
 
 /** Returns null if lock acquired (or refreshed as our own), or the foreign
- *  LockInfo if another live process already holds it. */
+ *  LockInfo if another live process already holds it.
+ *  Acquisition of a *new* lock (no existing file yet) uses `wx` exclusive-create to
+ *  close the read-then-write TOCTOU race between two directors starting at the same
+ *  instant — only one process's exclusive create can win; the loser falls back to
+ *  reading what the winner wrote and reports it as foreign. Refreshing our own
+ *  existing lock (heartbeat) still uses a plain write since we already own it. */
 function acquireOrCheckLock(): LockInfo | null {
 	const existing = readLock();
 	if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) {
@@ -288,6 +297,25 @@ function acquireOrCheckLock(): LockInfo | null {
 		startedAt: existing && existing.pid === process.pid ? existing.startedAt : new Date().toISOString(),
 		heartbeatAt: new Date().toISOString(),
 	};
+	if (!existing) {
+		// No lock file observed — try to win it atomically via exclusive create.
+		fs.mkdirSync(path.dirname(lockPath()), { recursive: true });
+		try {
+			const fd = fs.openSync(lockPath(), "wx");
+			fs.writeSync(fd, JSON.stringify(info, null, 2));
+			fs.closeSync(fd);
+			return null; // we won the race
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+				// Someone else won the race between our read and our create attempt.
+				const winner = readLock();
+				if (winner && winner.pid !== process.pid && isPidAlive(winner.pid)) return winner;
+				// Winner turned out to be us, dead, or unreadable — fall through to reclaim below.
+			} else {
+				throw e;
+			}
+		}
+	}
 	writeJson(lockPath(), info);
 	return null;
 }
@@ -371,6 +399,16 @@ function stampArchitecture(sha: string): void {
 
 function saveState(state: WfState): void {
 	writeJson(statePath(), state);
+}
+
+// Single canonical "is this artifact still an empty stub" check, shared by wf_init
+// (deciding whether to overwrite) and wf_stage_complete (deciding whether the stage's
+// required artifact was actually filled in). Previously wf_init compared against an
+// exact stub string while wf_stage_complete used a looser substring/blank check —
+// the two could disagree if the stub template text ever changed between versions.
+function isStubContent(content: string): boolean {
+	const trimmed = content.trim();
+	return trimmed === "" || content.includes("_empty_");
 }
 
 // ---- gating logic ----
@@ -473,11 +511,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
+	// Always active once the extension is loaded — role() defaults to "director" when
+	// PI_WORKFLOW_ROLE is unset, and gating always applies (no ungated bypass). Director's
+	// own write scope is a narrow allowlist, so this is safe for casual/non-workflow use
+	// of a repo that happens to have this extension installed.
 	pi.on("tool_call", async (event, _ctx) => {
-		// No PI_WORKFLOW_ROLE set at all → this session isn't part of a
-		// workflow run. Don't limit tool calls or gate writes.
-		const r0 = roleOrNull();
-		if (r0 === null) return undefined;
+		const r0 = role();
 
 		toolCalls += 1;
 
@@ -568,8 +607,8 @@ export default function (pi: ExtensionAPI) {
 			for (const md of ARTIFACT_MDS) {
 				const abs = artifactPath(md);
 				const stub = `# ${md.replace(".md", "")}\n\n_empty_\n`;
-const content = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
-if (content === null || content === "" || content === stub) fs.writeFileSync(abs, stub);
+				const content = fs.existsSync(abs) ? fs.readFileSync(abs, "utf8") : null;
+				if (content === null || isStubContent(content)) fs.writeFileSync(abs, stub);
 			}
 			return { content: [{ type: "text", text: "workflow initialized" }], details: { ok: true } };
 		},
@@ -595,10 +634,17 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			// --- auto-skip chain: fast-forward through any configured skip stages ---
 			fs.mkdirSync(artifactsDir(), { recursive: true }); // guard: ensure dir exists even if wf_init wasn't called first
 			const skip = skipStagesSet();
+			const clrForSkip = loadClr();
 			const skippedChain: Stage[] = [];
 			const freshChain: Stage[] = [];
 			let cur: Stage | null = target;
 			while (cur) {
+				// An OPEN CLR at or before this stage must stop the auto-skip chain here —
+				// otherwise a stage with an unresolved clarification gets silently marked
+				// "done" via config, leaving state internally inconsistent (done + blocking
+				// CLR still open against it). Surface it as the normal in-progress/blocked
+				// stage instead so the director sees and resolves it through the usual path.
+				if (clrBlocksStage(clrForSkip, cur).blocked) break;
 				if (skip.has(cur)) {
 					state.stages[cur].status = "done";
 					state.stages[cur].sha = "auto-skip";
@@ -718,7 +764,7 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			const autoSkip = skipStagesSet().has(stage);
 			for (const art of autoSkip ? [] : ARTIFACT_FOR_STAGE[stage]) {
 				const abs = artifactPath(art);
-				if (!fs.existsSync(abs) || fs.readFileSync(abs, "utf8").trim() === "" || fs.readFileSync(abs, "utf8").includes("_empty_")) {
+				if (!fs.existsSync(abs) || isStubContent(fs.readFileSync(abs, "utf8"))) {
 					errors.push(`artifact missing or stub: ${art}`);
 				}
 			}
@@ -727,9 +773,12 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			const gate = clrBlocksStage(clr, stage);
 			if (gate.blocked) errors.push(`OPEN CLRs block: ${gate.ids.join(", ")}`);
 
-			// 3. retry limit
-			const retries = state.stages[stage].retries ?? 0;
-			if (retries > 3) errors.push(`retry count ${retries} exceeds cap`);
+			// 3. retry limit — checked against state.rulings (key-scoped, cumulative across
+			// stage boundaries), not a per-stage mirror. Any defect key currently sitting at
+			// >3 unruled bumps means the director skipped calling wf_retry_rule and must do so
+			// before this (or any later) stage can complete.
+			const stuckKeys = Object.entries(state.rulings).filter(([, rec]) => rec.bumps > 3).map(([key]) => key);
+			if (stuckKeys.length) errors.push(`retry cap exceeded for key(s) needing wf_retry_rule: ${stuckKeys.join(", ")}`);
 
 			// 4. SHA sanity
 			if (!/^[0-9a-f]{7,40}$/i.test(sha)) errors.push(`bad sha: ${sha}`);
@@ -773,10 +822,14 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			const entry = `\n## ${id}\n- Status: OPEN\n- Raised by: ${role()}\n- Stage: ${params.stage}\n- Question: ${params.question}\n- Resolution: _pending_\n- Resolved by: _pending_\n`;
 			const clrFile = path.join(artifactsDir(), "clarifications.md");
 			fs.appendFileSync(clrFile, entry);
-			// mark stage blocked
+			// mark stage blocked — but only if it isn't already "done". Filing a CLR against
+			// a stage the workflow has already progressed past shouldn't retroactively flip
+			// its recorded status backward and corrupt the audit trail; the open CLR still
+			// blocks all further writes via clrBlocksStage regardless of this status field.
 			const state = loadState();
-			if (state.stages[params.stage as Stage]) {
-				state.stages[params.stage as Stage].status = "blocked";
+			const target = state.stages[params.stage as Stage];
+			if (target && target.status !== "done") {
+				target.status = "blocked";
 				saveState(state);
 			}
 			return { content: [{ type: "text", text: `HALT: filed ${id}. Stop current work.` }], details: { ok: true, id } };
@@ -819,10 +872,13 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			}
 			rec.bumps += 1;
 			state.rulings[params.key] = rec;
-			// Mirror onto the current stage's retry counter so wf_stage_complete's retry-cap check reflects real bumps.
-			if (state.current) {
-				state.stages[state.current].retries = (state.stages[state.current].retries ?? 0) + 1;
-			}
+			// NOTE: bumps live only on state.rulings[key] — keyed by defect key, not by
+			// "whichever stage happens to be state.current right now". A defect bumped once
+			// during review and again during testing (same key, per docs: "same-bug key spans
+			// Review+QA loops") must accumulate correctly across that stage boundary; mirroring
+			// onto state.current would silently split the count across two unrelated stage
+			// counters instead. wf_stage_complete's retry-cap check (step 3, "retry limit")
+			// reads state.rulings directly instead of a per-stage mirror.
 			saveState(state);
 			if (rec.bumps >= 3) {
 				return { content: [{ type: "text", text: `DIRECTOR_RULE: ${params.key} at ${rec.bumps} bumps — director must rule via wf_retry_rule.` }], details: { ok: true, decision: "DIRECTOR_RULE", key: params.key, ...rec } };
@@ -844,8 +900,6 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			rec.ruled += 1;
 			rec.bumps = 0;
 			state.rulings[params.key] = rec;
-			// A ruling resets the current stage's retry counter too, keeping it in sync with bumps.
-			if (state.current) state.stages[state.current].retries = 0;
 			saveState(state);
 			fs.appendFileSync(
 				path.join(artifactsDir(), "decisions.md"),

@@ -27,7 +27,13 @@ pi install -l git:github.com/mdpstory/pi-workflow
 - Stage sequencing (can't skip stages without an explicit trivial-task escape hatch).
 - 8 role SKILL.md files under `skills/wf-*`.
 
-Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`).
+Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`). The
+default applies consistently everywhere — both tool permission checks and the
+write/edit gate treat an unset `PI_WORKFLOW_ROLE` as `director`. Director's own
+write scope is a narrow allowlist (`decisions.md`, `tasks.md`,
+`clarifications.md`, plus its own `.workflow/<id>/` state files) — it does **not**
+get a blanket bypass, so this default is safe even for casual/non-workflow use
+of a repo that has the extension installed.
 
 ### Skipping stages by default
 
@@ -82,9 +88,11 @@ property of one task and lives under `.workflow/<id>/artifacts/`.
 `architecture.md` is different: it describes the codebase, not a single task,
 so it lives once at `.workflow/shared/artifacts/architecture.md` and every
 parallel workflow id reads and writes the same file. `wf_init` scaffolds it
-there; `wf_stage_complete architecture` checks it there; the Architect role
-(and Director) may write it regardless of `PI_WORKFLOW_ID`. This is
-intentional and not subject to the cross-namespace block above.
+there; `wf_stage_complete architecture` checks it there; only the Architect
+role may write it, regardless of `PI_WORKFLOW_ID` — **Director is explicitly
+blocked** from writing it and must delegate to the architect subagent. This
+shared-artifact reach is intentional and not subject to the cross-namespace
+block above.
 
 **Architecture stage is never in `skipStages`** — unlike other stages it's
 auto-skipped conditionally instead: `wf_stage_complete architecture` stamps
@@ -94,6 +102,26 @@ a `<!-- generated-at-sha: <sha> -->` marker on the first line of
 `node_modules/`) to check whether anything actually changed since that sha.
 No diff → auto-marked done without invoking the Architect. Diff found (or
 no git repo, or no stamp yet) → Architect runs normally.
+
+### Retry keys span stages, not just the current one
+
+`wf_retry_bump`/`wf_retry_rule` counters are keyed purely by the defect/CLR
+`key` string (`state.rulings[key]`), never by whichever stage happens to be
+"current" at call time. This matters because the same defect key is meant to
+span Review and QA (a bug caught by Reviewer, still failing when QA re-tests,
+is one key, one counter) — `wf_stage_complete`'s retry cap check reads that
+keyed counter directly (`bumps > 3`) rather than a per-stage mirror, so bumps
+filed in different stages for the same key accumulate correctly instead of
+splitting across two independent counters.
+
+### Concurrent writes to shared files aren't file-locked
+
+Parallel Engineer subagents (see implementation stage) may append to the same
+`context.md` at nearly the same time. The extension doesn't serialize these —
+it only enforces *which* role/path may write, not ordering. Peer engineers
+should use `intercom` to sequence context.md appends ("I'm updating context.md
+ now, hold off") rather than writing simultaneously; a lost update here is a
+self-inflicted race, not something the gate can prevent.
 
 ## Testing
 
