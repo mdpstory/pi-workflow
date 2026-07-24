@@ -13,6 +13,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -114,8 +115,18 @@ function statePath(): string {
 function clrIndexPath(): string {
 	return path.join(wfDir(), "clr-index.json");
 }
+function lockPath(): string {
+	return path.join(wfDir(), "director.lock");
+}
+// Returns null when PI_WORKFLOW_ROLE is unset — meaning this session is not
+// participating in the workflow at all, so no role gating should apply.
+// Only an explicit PI_WORKFLOW_ROLE=director makes a session the director.
+function roleOrNull(): string | null {
+	const v = process.env.PI_WORKFLOW_ROLE;
+	return v ? v.toLowerCase() : null;
+}
 function role(): string {
-	return (process.env.PI_WORKFLOW_ROLE || "director").toLowerCase();
+	return roleOrNull() ?? "director";
 }
 function readJson<T>(p: string, fallback: T): T {
 	try {
@@ -125,8 +136,55 @@ function readJson<T>(p: string, fallback: T): T {
 	}
 }
 function writeJson(p: string, obj: unknown): void {
+	// Atomic write: write to a temp file then rename, so a kill mid-write
+	// can never leave a half-written / corrupt state.json or clr-index.json.
 	fs.mkdirSync(path.dirname(p), { recursive: true });
-	fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+	const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+	fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+	fs.renameSync(tmp, p);
+}
+
+// ---- concurrency lock ----
+// Detects "is a workflow already running in this dir" via PID liveness.
+// Self-heals: if the PID that holds the lock is dead (session was killed /
+// quit), the lock is considered stale and silently reclaimed — no manual
+// unlock step needed after an abort.
+
+interface LockInfo {
+	pid: number;
+	host: string;
+	startedAt: string;
+	heartbeatAt: string;
+}
+
+function isPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function readLock(): LockInfo | null {
+	return readJson<LockInfo | null>(lockPath(), null);
+}
+
+/** Returns null if lock acquired (or refreshed as our own), or the foreign
+ *  LockInfo if another live process already holds it. */
+function acquireOrCheckLock(): LockInfo | null {
+	const existing = readLock();
+	if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) {
+		return existing; // foreign + alive → caller must not proceed
+	}
+	const info: LockInfo = {
+		pid: process.pid,
+		host: os.hostname(),
+		startedAt: existing && existing.pid === process.pid ? existing.startedAt : new Date().toISOString(),
+		heartbeatAt: new Date().toISOString(),
+	};
+	writeJson(lockPath(), info);
+	return null;
 }
 function loadState(): WfState {
 	const empty: WfState = {
@@ -244,6 +302,12 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
+
+		// No PI_WORKFLOW_ROLE set at all → this session isn't part of a
+		// workflow run. Don't gate its writes as if it were the director.
+		const r0 = roleOrNull();
+		if (r0 === null) return undefined;
+
 		const p = (event.input as { path?: string }).path;
 		if (!p) return undefined;
 		const rel = relFromRepo(p);
@@ -251,7 +315,7 @@ export default function (pi: ExtensionAPI) {
 		// Skip files outside repo root — not our business.
 		if (rel.startsWith("..")) return undefined;
 
-		const r = role();
+		const r = r0;
 
 		// 1. Role allowlist
 		const allow = isPathAllowedForRole(r, rel);
@@ -288,6 +352,17 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "denied: director only" }], details: { ok: false } };
 			}
 			fs.mkdirSync(artifactsDir(), { recursive: true });
+			const foreign = acquireOrCheckLock();
+			if (foreign) {
+				return {
+					content: [{
+						type: "text",
+						text: `BLOCKED: another director session is already running this workflow (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}, last heartbeat ${foreign.heartbeatAt}). ` +
+							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel, run this workflow in a separate git worktree instead.`,
+					}],
+					details: { ok: false, decision: "LOCKED", lock: foreign },
+				};
+			}
 			const state = loadState();
 			saveState(state);
 			writeJson(clrIndexPath(), loadClr());
@@ -321,6 +396,7 @@ export default function (pi: ExtensionAPI) {
 			state.current = target;
 			state.stages[target].status = "in-progress";
 			saveState(state);
+			acquireOrCheckLock(); // refresh heartbeat; also self-reclaims a stale lock
 
 			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
 			resetToolCalls();
@@ -524,14 +600,19 @@ export default function (pi: ExtensionAPI) {
 		async execute() {
 			const state = loadState();
 			const clr = loadClr();
+			const lock = readLock();
+			const lockLine = lock
+				? `lock: pid ${lock.pid} on ${lock.host} (${isPidAlive(lock.pid) ? "ALIVE" : "STALE — will be reclaimed"}), heartbeat ${lock.heartbeatAt}`
+				: "lock: none";
 			const lines = [
 				`role: ${role()}`,
 				`current: ${state.current ?? "—"}`,
 				`open CLRs: ${clr.open.length ? clr.open.map((c) => `${c.id}(${c.stage})`).join(", ") : "none"}`,
+				lockLine,
 				"",
 				renderProgress(state),
 			];
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr } };
+			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock } };
 		},
 	});
 }
