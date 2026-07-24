@@ -15,8 +15,10 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
 
 ## Procedure
 
-1. Read inputs. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
-2. Implement task by task, in the order `tasks.md` gives.
+1. Read inputs: `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`, `.workflow/artifacts/decisions.md`.
+2. **Read `.workflow/context.md` if it exists.** Use file summaries from Scout/Architect to understand existing code without re-reading. Only read source files NOT listed in the "files explored" table.
+3. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
+4. Implement task by task, in the order `tasks.md` gives.
 3. Implement all tasks without committing.
 4. When all tasks in scope done, run `git rev-parse HEAD` to get current SHA. Notify Director `{stage:"implementation", sha:"<sha>"}` and stop.
 

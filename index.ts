@@ -60,8 +60,8 @@ const ROLE_FOR_STAGE: Record<Stage, string> = {
 const ROLE_ALLOW: Record<string, RegExp[]> = {
 	director: [/^\.workflow\//, /^progress\.md$/],
 	planner: [/^\.workflow\/artifacts\/plan\.md$/, /^\.workflow\/artifacts\/tasks\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	scout: [/^\.workflow\/artifacts\/research\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	architect: [/^\.workflow\/artifacts\/architecture\.md$/, /^\.workflow\/artifacts\/decisions\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	scout: [/^\.workflow\/artifacts\/research\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	architect: [/^\.workflow\/artifacts\/architecture\.md$/, /^\.workflow\/artifacts\/decisions\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
 	engineer: [/^\.workflow\/artifacts\/clarifications\.md$/], // + source (default allow below)
 	reviewer: [/^\.workflow\/artifacts\/review\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
 	qa: [/^\.workflow\/artifacts\/test-report\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
@@ -80,6 +80,7 @@ const ARTIFACT_MDS = new Set([
 	"review.md",
 	"test-report.md",
 	"changelog.md",
+	"context.md", // shared knowledge cache between agents
 ]);
 
 // ---- state ----

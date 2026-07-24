@@ -31,6 +31,27 @@ You route only. Do NOT write plan/research/architecture/review/test-report/chang
 
 Dispatch each stage to its dedicated registered subagent (`agent: "planner"`, `agent: "scout"`, `agent: "architect"`, `agent: "engineer"`, `agent: "reviewer"`, `agent: "qa"`, `agent: "documenter"`).
 
+### Context passing (CRITICAL)
+
+**Before spawning ANY agent after Scout completes**, read `.workflow/context.md` and inject its contents into the agent's task prompt. This prevents re-reading files Scout already explored.
+
+Pattern:
+```
+const context = fs.readFileSync(".workflow/context.md", "utf8");
+subagent({
+  agent: "architect",
+  task: "PI_WORKFLOW_ROLE=architect. You are the Architect in this pi-workflow run. "
+      + "Load skill wf-architect. "
+      + "Request: <the user's request/context>. "
+      + "\n\n## Context from prior agents\n" + context + "\n\n" 
+      + "Use the context above. DO NOT re-read files already listed in 'files explored' — the summaries contain what you need. "
+      + "Only read source files NOT listed in context. "
+      + "Write .workflow/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
+})
+```
+
+### Standard dispatch
+
 Put the role assignment and full instructions in the `task` text, e.g.:
 ```
 subagent({
