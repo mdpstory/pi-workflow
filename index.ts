@@ -400,13 +400,17 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 		}
 
 		// .workflow/shared/artifacts/ — codebase-level artifacts (architecture.md), reachable
-		// from every workflow id. Only artifacts on the SHARED_ARTIFACTS list may live here,
-		// and role allowlist still applies (architect/director may write architecture.md).
+		// from every workflow id. Only the architect role may write these — the Director
+		// must delegate to the architect subagent instead.
 		if (ns.kind === "shared") {
 			const isArtifact = ns.inner.startsWith("artifacts/");
 			const filename = ns.inner.slice("artifacts/".length);
 			if (!isArtifact || !SHARED_ARTIFACTS.has(filename)) {
 				return { ok: false, reason: `.workflow/shared/ only holds shared artifacts (${[...SHARED_ARTIFACTS].join(", ")})` };
+			}
+			// Director must NOT write shared artifacts — delegate to the architect subagent.
+			if (r === "director") {
+				return { ok: false, reason: `director may not write ${relPath} — delegate to the architect subagent` };
 			}
 			const match = allow.some((re) => re.test(ns.inner));
 			return match
