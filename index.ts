@@ -403,13 +403,20 @@ export default function (pi: ExtensionAPI) {
 
 			// Delegation guidance: tell solo directors to spawn a subagent
 			const delegateRole = ROLE_FOR_STAGE[target];
+			const agentMap: Record<string, string> = {
+				planner: "planner",
+				scout: "scout",
+				reviewer: "reviewer",
+			};
+			const targetAgent = agentMap[delegateRole] || "worker";
 			const artifacts = ARTIFACT_FOR_STAGE[target];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
 			const hint = [
-				`\n\nDELEGATE: Spawn a subagent with env PI_WORKFLOW_ROLE=${delegateRole} to handle this stage.`,
+				`\n\nDELEGATE: Spawn subagent with agent="${targetAgent}".`,
+				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole}" and load skill "wf-${delegateRole}".`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
-				`When the subagent finishes, call wf_stage_complete("${target}", sha).`,
+				`When finished, call wf_stage_complete("${target}", sha).`,
 			].join(" ");
 			return ok(`stage started: ${target}${hint}`);
 		},
