@@ -283,6 +283,11 @@ function resetToolCalls(): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	// Reset tool counter on session start / switch / reload
+	pi.on("session_start", async (_event, _ctx) => {
+		resetToolCalls();
+	});
+
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
 	pi.on("tool_call", async (event, _ctx) => {
 		// No PI_WORKFLOW_ROLE set at all → this session isn't part of a
