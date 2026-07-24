@@ -540,14 +540,17 @@ export default function (pi: ExtensionAPI) {
 
 		// 50-tool ceiling. Above cap, only allow write/edit so the agent can
 		// mark its artifact `DRAFT — incomplete, split required` and stop.
+		const CEILING_EXEMPT = ["write", "edit", "wf_clr_open", "intercom"];
 		if (workflowActive() && toolCalls > TOOL_CAP) {
-			if (event.toolName !== "write" && event.toolName !== "edit") {
+			if (!CEILING_EXEMPT.includes(event.toolName)) {
 				return {
 					block: true,
 					reason: `pi-workflow: session hit ${TOOL_CAP}-tool ceiling (call ${toolCalls}). Mark your artifact \`DRAFT — incomplete, split required\`, propose sub-tasks, notify Director via wf_clr_open or intercom, then stop.`,
 				};
 			}
-			if (toolCalls > TOOL_CAP + 5) {
+			// Hard stop past cap+5, but never block the escalation channels
+			// themselves — otherwise the agent can't comply with the instruction above.
+			if (toolCalls > TOOL_CAP + 5 && event.toolName !== "wf_clr_open" && event.toolName !== "intercom") {
 				return { block: true, reason: `pi-workflow: hard stop at ${toolCalls} tool calls. Director must reassign.` };
 			}
 		}
