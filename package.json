@@ -1,0 +1,15 @@
+{
+  "name": "pi-workflow",
+  "version": "0.1.0",
+  "description": "Role-enforced, stage-gated AI workflow extension for pi. Implements ai-workflow-specification.md.",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  }
+}
