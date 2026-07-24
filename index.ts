@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as child_process from "node:child_process";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -94,7 +93,6 @@ interface WfState {
 	stages: Record<Stage, { status: "todo" | "in-progress" | "done" | "blocked" | "retry" | "failed"; sha?: string; retries?: number }>;
 	current: Stage | null;
 	rulings: Record<string, RetryRec>; // CLR-id or defect-key → counters
-	toolCallsThisStage: number;
 }
 
 interface ClrIndex {
@@ -194,7 +192,6 @@ function loadState(): WfState {
 		stages: Object.fromEntries(STAGES.map((s) => [s, { status: "todo" }])) as WfState["stages"],
 		current: null,
 		rulings: {},
-		toolCallsThisStage: 0,
 	};
 	return readJson(statePath(), empty);
 }
@@ -232,10 +229,8 @@ function renderProgress(state: WfState): string {
 }
 
 function saveState(state: WfState): void {
-	state.toolCallsThisStage = toolCalls;
 	writeJson(statePath(), state);
 	fs.writeFileSync(path.join(wfDir(), "progress.md"), renderProgress(state));
-	pushDashboard(state, loadClr());
 }
 
 // ---- gating logic ----
@@ -286,88 +281,12 @@ let toolCalls = 0;
  *  gets its own budget instead of sharing one across the entire session. */
 function resetToolCalls(): void {
 	toolCalls = 0;
-	try {
-		const state = loadState();
-		state.toolCallsThisStage = 0;
-		writeJson(statePath(), state);
-	} catch {}
-}
-
-// ---- dashboard helpers ----
-
-const DASHBOARD_PORT = 4242;
-const DASHBOARD_URL = `http://localhost:${DASHBOARD_PORT}`;
-
-async function pingDashboard(): Promise<boolean> {
-	try {
-		const res = await fetch(`${DASHBOARD_URL}/ping`, { signal: AbortSignal.timeout(500) });
-		return res.ok;
-	} catch {
-		return false;
-	}
-}
-
-async function ensureDashboardServer(): Promise<void> {
-	try {
-		if (await pingDashboard()) return;
-		const serverPath = new URL("./dashboard-server.mjs", import.meta.url).pathname;
-		const child = child_process.spawn(process.execPath, [serverPath], {
-			detached: true,
-			stdio: "ignore",
-		});
-		child.unref();
-		for (let i = 0; i < 10; i++) {
-			await new Promise((r) => setTimeout(r, 200));
-			if (await pingDashboard()) break;
-		}
-	} catch {}
-}
-
-function pushDashboard(state: WfState, clr: ClrIndex): void {
-	try {
-		const artifacts: Record<string, string> = {};
-		const dir = artifactsDir();
-		if (fs.existsSync(dir)) {
-			for (const f of fs.readdirSync(dir)) {
-				if (f.endsWith(".md")) {
-					try { artifacts[f] = fs.readFileSync(path.join(dir, f), "utf8"); } catch {}
-				}
-			}
-		}
-		const body = JSON.stringify({
-			cwd: repoRoot(),
-			repoName: path.basename(repoRoot()),
-			state,
-			clr,
-			artifacts,
-			toolCalls,
-			toolCap: TOOL_CAP,
-		});
-		fetch(`${DASHBOARD_URL}/update`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body,
-			signal: AbortSignal.timeout(2000),
-		}).catch(() => {});
-	} catch {}
 }
 
 export default function (pi: ExtensionAPI) {
 	// Reset tool counter on session start / switch / reload
-	let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 	pi.on("session_start", async (_event, _ctx) => {
 		resetToolCalls();
-		if (heartbeatInterval) clearInterval(heartbeatInterval);
-		heartbeatInterval = setInterval(() => {
-			try {
-				fetch(`${DASHBOARD_URL}/heartbeat`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ cwd: repoRoot() }),
-					signal: AbortSignal.timeout(2000),
-				}).catch(() => {});
-			} catch {}
-		}, 10_000);
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
@@ -439,7 +358,6 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "denied: director only" }], details: { ok: false } };
 			}
 			fs.mkdirSync(artifactsDir(), { recursive: true });
-			await ensureDashboardServer();
 			const gitignorePath = path.join(repoRoot(), ".gitignore");
 			if (fs.existsSync(gitignorePath)) {
 				const gitignore = fs.readFileSync(gitignorePath, "utf8");
@@ -616,8 +534,6 @@ export default function (pi: ExtensionAPI) {
 			if (state.stages[params.stage as Stage]) {
 				state.stages[params.stage as Stage].status = "blocked";
 				saveState(state);
-			} else {
-				pushDashboard(state, loadClr());
 			}
 			return { content: [{ type: "text", text: `HALT: filed ${id}. Stop current work.` }], details: { ok: true, id } };
 		},
@@ -641,7 +557,6 @@ export default function (pi: ExtensionAPI) {
 				path.join(artifactsDir(), "clarifications.md"),
 				`\n<!-- ${params.id} resolved by director: ${params.resolution} -->\n`,
 			);
-			pushDashboard(loadState(), clr);
 			return ok(`resolved ${params.id}`);
 		},
 	});
