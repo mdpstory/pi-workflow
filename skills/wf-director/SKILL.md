@@ -23,35 +23,24 @@ You route only. Do NOT write plan/research/architecture/review/test-report/chang
 
 ## Subagent dispatch (IMPORTANT — read before spawning)
 
-The `subagent` tool's `agent:` field must name a **real, registered** agent. Check what's actually installed if unsure (`ls ~/.pi/agent/agents/`). Do NOT invent a name like `general` or `<role>` and do NOT rely on an env var — the tool has no env-var mechanism; `PI_WORKFLOW_ROLE=<role>` is conveyed by **writing it into the task text**, not as a real env var.
+Dispatch each stage to its dedicated registered subagent (`agent: "planner"`, `agent: "scout"`, `agent: "architect"`, `agent: "engineer"`, `agent: "reviewer"`, `agent: "qa"`, `agent: "documenter"`).
 
-Most installed agent rosters only ship generic agents whose names happen to collide with pi-workflow role names but are NOT write-capable:
-  - `planner`: `tools: read, grep, find, ls` — no bash, no write. Cannot ever produce a file.
-  - `reviewer`: has `bash` but its own system prompt forbids using it to modify files ("read-only commands only").
-  - `scout`: has `bash` and *can* sneak a write/commit through it, but this is incidental, not guaranteed, and not its documented contract — do not rely on it.
-  - `worker`: the only agent with unrestricted read/write/bash and no read-only constraint baked into its prompt.
-
-Every pi-workflow role (Planner, Scout, Architect, Engineer, Reviewer, QA, Documenter) must **write an artifact and `git commit` it**. Therefore:
-
-- **Always dispatch every pi-workflow role via `agent: "worker"`.** Never use `agent: "planner"`/`"scout"`/`"reviewer"` just because the name matches the role — those are separate, mostly-read-only agents from an unrelated generic pipeline and will silently fail to write/commit (or in Planner's case, fail even to attempt it, since it has no bash tool).
-- Put the role assignment and full instructions in the `task` text, e.g.:
-  ```
-  subagent({
-    agent: "worker",
-    task: "PI_WORKFLOW_ROLE=planner. You are the Planner in this pi-workflow run. "
-        + "Read and follow <path-to>/skills/wf-planner/SKILL.md exactly. "
-        + "Request: <the user's request/context>. "
-        + "Write .workflow/artifacts/plan.md and tasks.md, commit, then report back stage/artifacts/sha."
-  })
-  ```
-- Before your first dispatch in a session, confirm the target agent's frontmatter `tools:` includes write/edit + bash and has no read-only restriction in its prompt. If in doubt, default to `worker`.
-- If an artifact comes back still stubbed/`_empty_` after a subagent reports success, treat it as BLOCKED (wrong agent used, likely read-only) — do not advance the stage.
+Put the role assignment and full instructions in the `task` text, e.g.:
+```
+subagent({
+  agent: "architect",
+  task: "PI_WORKFLOW_ROLE=architect. You are the Architect in this pi-workflow run. "
+      + "Load skill wf-architect. "
+      + "Request: <the user's request/context>. "
+      + "Write .workflow/artifacts/architecture.md, commit, then report back stage/artifacts/sha."
+})
+```
 
 ## Per-stage loop
 
 ```
 wf_stage_start <stage>
-  → spawn a NEW subagent (agent: worker, task text carries PI_WORKFLOW_ROLE=<role> + skill path; do NOT recruit existing generic/idle sessions via intercom)
+  → spawn a NEW subagent (agent: <role>, task text carries PI_WORKFLOW_ROLE=<role> + skill name; do NOT recruit existing generic/idle sessions via intercom)
   → wait for role's "artifact committed at <sha>" notify
   → read artifact in full
   → wf_stage_complete <stage> <sha>
@@ -61,10 +50,10 @@ wf_stage_start <stage>
 
 ## Parallel Planning ∥ Research
 
-Both run concurrently. You MUST delegate these tasks to dedicated subagents (agent: worker, per Subagent dispatch above). Do NOT attempt to do them yourself. Do NOT reuse existing idle sessions.
+Both run concurrently. You MUST delegate these tasks to dedicated subagents (`agent: "planner"`, `agent: "scout"`). Do NOT attempt to do them yourself. Do NOT reuse existing idle sessions.
 
-1. Spawn a subagent (`agent: worker`, task text: `PI_WORKFLOW_ROLE=planner`) to act as Planner.
-2. Spawn a subagent (`agent: worker`, task text: `PI_WORKFLOW_ROLE=scout`) to act as Scout.
+1. Spawn a subagent (`agent: "planner"`, task text: `PI_WORKFLOW_ROLE=planner`) to act as Planner.
+2. Spawn a subagent (`agent: "scout"`, task text: `PI_WORKFLOW_ROLE=scout`) to act as Scout.
 
 
 Both then work independently. Wait for both to notify back with their commit SHA before `wf_stage_start task-breakdown`.

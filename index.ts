@@ -402,13 +402,11 @@ export default function (pi: ExtensionAPI) {
 			resetToolCalls();
 
 			// Delegation guidance: tell solo directors to spawn a subagent
-			// NOTE: Always recommend agent="worker" because workflow roles must write artifacts & commit,
-			// whereas built-in pi agents (planner, scout, reviewer) are read-only or lack write tools.
 			const delegateRole = ROLE_FOR_STAGE[target];
 			const artifacts = ARTIFACT_FOR_STAGE[target];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
 			const hint = [
-				`\n\nDELEGATE: Spawn subagent with agent="worker".`,
+				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
 				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole}" and load skill "wf-${delegateRole}".`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
