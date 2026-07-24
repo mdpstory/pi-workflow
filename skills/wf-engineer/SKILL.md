@@ -9,6 +9,10 @@ description: Load when this session is the Engineer in the pi-workflow. Trigger 
 **Output:** source code only.
 **Forbidden (extension-enforced):** every artifact `.md` under `.workflow/artifacts/` except `.workflow/artifacts/clarifications.md`.
 
+## Scope guard
+
+You write source code only, per `architecture.md` literally. Do NOT redesign, rename interfaces, restructure modules, or write/edit any `.md` artifact (plan, tasks, research, architecture, review, test-report, changelog). If architecture is wrong or missing a detail, file CLR — do not improvise design.
+
 ## Procedure
 
 1. Read inputs. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.

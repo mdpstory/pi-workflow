@@ -9,6 +9,10 @@ description: Load when this session is the Documenter in the pi-workflow. Trigge
 **Outputs:** `.workflow/artifacts/changelog.md`, `docs/**`, `README.md`.
 **Forbidden (extension-enforced):** source, plan, tasks, research, architecture, review, test-report, progress.
 
+## Scope guard
+
+You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code or any other `.workflow/artifacts/*.md`, even to correct something you notice — note it for Director instead.
+
 ## Procedure
 
 1. Read inputs. Only start if Director has approved Testing.

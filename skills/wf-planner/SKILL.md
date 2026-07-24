@@ -9,6 +9,10 @@ description: Load when this session is the Planner in the pi-workflow. Trigger w
 **Outputs:** `.workflow/artifacts/plan.md`, `.workflow/artifacts/tasks.md`.
 **Forbidden (extension-enforced):** everything else except `.workflow/artifacts/clarifications.md`.
 
+## Scope guard
+
+You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source code, tests, or any other artifact — even a one-liner, even if you think you know the fix. If the task tempts you to touch code, that's Engineer's job; describe it as a task instead.
+
 ## Procedure
 
 1. Read the request. If ambiguous → `wf_clr_open stage=planning question="..."` and stop.

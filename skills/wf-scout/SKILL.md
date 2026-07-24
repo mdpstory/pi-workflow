@@ -9,6 +9,10 @@ description: Load when this session is the Scout in the pi-workflow. Trigger whe
 **Output:** `.workflow/artifacts/research.md`.
 **Forbidden (extension-enforced):** everything else except `.workflow/artifacts/clarifications.md`.
 
+## Scope guard
+
+You write `research.md` only — findings, not fixes. Do NOT edit code, write plan/tasks/architecture content, or propose solutions. If you spot a bug while exploring, note it as a risk in `research.md`; do not fix it.
+
 ## Procedure
 
 1. Explore repo. Prefer `codegraph_explore` / `codegraph_files` first, then grep.

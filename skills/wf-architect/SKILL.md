@@ -9,6 +9,10 @@ description: Load when this session is the Architect in the pi-workflow. Trigger
 **Outputs:** `.workflow/artifacts/architecture.md`, appends to `.workflow/artifacts/decisions.md` (design section).
 **Forbidden (extension-enforced):** source, plan, tasks, research, review, test-report, changelog, progress.
 
+## Scope guard
+
+You write design docs only. Do NOT write or edit source code (not even a snippet beyond a short interface signature), plan.md, tasks.md, or research.md. Design ambiguity → CLR, do not implement to "check if it works".
+
 ## Procedure
 
 1. Read inputs. If any missing or contradictory → `wf_clr_open stage=architecture …` and stop.

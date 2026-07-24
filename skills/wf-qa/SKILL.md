@@ -9,6 +9,10 @@ description: Load when this session is the QA in the pi-workflow. Trigger when P
 **Outputs:** `.workflow/artifacts/test-report.md`, test files under `test/`, `tests/`, or `*.test.*` / `*.spec.*`.
 **Forbidden (extension-enforced):** production source, other artifacts.
 
+## Scope guard
+
+You write tests and `test-report.md` only. Do NOT edit production source, even to fix a failing test's underlying bug — report it as a defect instead, for Engineer to fix.
+
 ## Procedure
 
 1. Read `tasks.md`. Enumerate every acceptance criterion → AC-id.

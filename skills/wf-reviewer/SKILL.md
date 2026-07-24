@@ -9,6 +9,10 @@ description: Load when this session is the Reviewer in the pi-workflow. Trigger 
 **Output:** `.workflow/artifacts/review.md`.
 **Forbidden (extension-enforced):** source code, all other artifacts except `.workflow/artifacts/clarifications.md`.
 
+## Scope guard
+
+You write `review.md` only. Do NOT edit source code, even to "just fix" a trivial finding — write it as a finding instead. Do NOT write other artifacts.
+
 ## Procedure
 
 1. Read inputs.
