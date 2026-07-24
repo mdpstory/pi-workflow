@@ -352,6 +352,14 @@ export default function (pi: ExtensionAPI) {
 				return { content: [{ type: "text", text: "denied: director only" }], details: { ok: false } };
 			}
 			fs.mkdirSync(artifactsDir(), { recursive: true });
+			const gitignorePath = path.join(repoRoot(), ".gitignore");
+			if (fs.existsSync(gitignorePath)) {
+				const gitignore = fs.readFileSync(gitignorePath, "utf8");
+				if (!gitignore.includes(".workflow/")) fs.appendFileSync(gitignorePath, "\n.workflow/\n");
+				if (!gitignore.includes("progress.md")) fs.appendFileSync(gitignorePath, "progress.md\n");
+			} else {
+				fs.writeFileSync(gitignorePath, ".workflow/\nprogress.md\n");
+			}
 			const foreign = acquireOrCheckLock();
 			if (foreign) {
 				return {

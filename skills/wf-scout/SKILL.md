@@ -32,7 +32,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
    - <symbol> at <path> — <what it does>
    ```
 
-3. `git commit -m "research: <one-line>"`
+3. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 4. Notify Director with `{stage:"research", artifact:".workflow/artifacts/research.md", sha}`.
 5. Stop.
 

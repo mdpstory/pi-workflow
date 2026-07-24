@@ -17,8 +17,8 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
 
 1. Read inputs. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
 2. Implement task by task, in the order `tasks.md` gives.
-3. Commit per task or per coherent chunk: `impl(T<n>): <one-line>`.
-4. When all tasks in scope done, notify Director `{stage:"implementation", sha:"<last-sha>"}` and stop.
+3. Implement all tasks without committing.
+4. When all tasks in scope done, run `git rev-parse HEAD` to get current SHA. Notify Director `{stage:"implementation", sha:"<sha>"}` and stop.
 
 ## Rules
 

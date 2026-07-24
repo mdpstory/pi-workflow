@@ -18,7 +18,7 @@ You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source 
 1. Read the request. If ambiguous → `wf_clr_open stage=planning question="..."` and stop.
 2. Write `.workflow/artifacts/plan.md`: goal, scope, non-goals, milestones, complexity estimate. Terse. Lists over prose.
 3. Write `.workflow/artifacts/tasks.md`: numbered tasks with IDs (`T1`, `T2`, …), acceptance criteria per task, deps.
-4. `git add .workflow/artifacts/plan.md .workflow/artifacts/tasks.md && git commit -m "planning: <one-line reason>"`
+4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 5. Notify Director via intercom: `{stage:"planning", artifacts:[".workflow/artifacts/plan.md",".workflow/artifacts/tasks.md"], sha:"<sha>"}`.
 6. Stop. Do not proceed.
 

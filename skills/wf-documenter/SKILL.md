@@ -25,7 +25,7 @@ You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code o
    ```
 
 3. Update `README.md` and `docs/` for any user-visible API / CLI / config change. Terse.
-4. `git commit -m "docs: <one-line>"`
+4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 5. Notify Director `{stage:"documentation", artifacts:[...], sha}`.
 6. Stop.
 

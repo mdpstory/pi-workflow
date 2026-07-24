@@ -31,7 +31,7 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
    ## verdict: APPROVED | CHANGES_REQUESTED
    ```
 
-4. `git commit -m "review: <verdict>"`
+4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 5. Notify Director `{stage:"review", artifact:"review.md", verdict, sha}`.
 6. Stop.
 

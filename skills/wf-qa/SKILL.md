@@ -17,7 +17,7 @@ You write tests and `test-report.md` only. Do NOT edit production source, even t
 
 1. Read `tasks.md`. Enumerate every acceptance criterion → AC-id.
 2. Run existing test suite. Capture output.
-3. For each AC without a covering test, write one. Commit `test: cover AC-<id>`.
+3. For each AC without a covering test, write one.
 4. Rerun full suite.
 5. Write `.workflow/artifacts/test-report.md`:
 
@@ -40,7 +40,7 @@ You write tests and `test-report.md` only. Do NOT edit production source, even t
    ## verdict: PASS | FAIL
    ```
 
-6. `git commit -m "testing: <verdict>"`
+6. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 7. Notify Director `{stage:"testing", artifact:".workflow/artifacts/test-report.md", verdict, sha}`.
 8. Stop.
 

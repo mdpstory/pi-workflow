@@ -18,7 +18,7 @@ You write design docs only. Do NOT write or edit source code (not even a snippet
 1. Read inputs. If any missing or contradictory → `wf_clr_open stage=architecture …` and stop.
 2. Write `.workflow/artifacts/architecture.md`: components, interfaces (signatures), data flow, key trade-offs mapped to task IDs.
 3. Append each non-obvious choice to `.workflow/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
-4. `git commit -m "architecture: <one-line>"`
+4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 5. Notify Director with `{stage:"architecture", artifact:".workflow/artifacts/architecture.md", sha}`.
 6. Stop.
 
