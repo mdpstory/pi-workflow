@@ -175,6 +175,10 @@ const SESSION_ID: string = (() => {
 	return fresh;
 })();
 function workflowId(): string {
+	if (process.env.PI_WORKFLOW_ID) {
+		const safe = process.env.PI_WORKFLOW_ID.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+		if (safe) return safe;
+	}
 	return SESSION_ID;
 }
 function wfRoot(): string {
@@ -583,14 +587,9 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			const target = params.stage as Stage;
 			const idx = stageIndex(target);
 			if (idx > 0) {
-				// task-breakdown runs after BOTH planning and research (they run in parallel);
-				// every other stage just needs its immediate predecessor done.
-				const prevOk = target === "task-breakdown"
-					? state.stages.planning.status === "done" && state.stages.research.status === "done"
-					: state.stages[STAGES[idx - 1]].status === "done";
+				const prevOk = state.stages[STAGES[idx - 1]].status === "done";
 				if (!prevOk) {
-					const need = target === "task-breakdown" ? "planning and research" : STAGES[idx - 1];
-					return deny(`previous stage(s) "${need}" not done`);
+					return deny(`previous stage "${STAGES[idx - 1]}" not done`);
 				}
 			}
 			// --- auto-skip chain: fast-forward through any configured skip stages ---

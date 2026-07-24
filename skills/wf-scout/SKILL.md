@@ -1,6 +1,6 @@
 ---
 name: wf-scout
-description: Load when this session is the Scout in the pi-workflow. Trigger when PI_WORKFLOW_ROLE=scout, the user says "act as scout", or Director assigns Research stage. Survey the codebase for risks, dependencies, and reusable components. Runs parallel to Planner. Output research.md.
+description: Load when this session is the Scout in the pi-workflow. Trigger when PI_WORKFLOW_ROLE=scout, the user says "act as scout", or Director assigns Research stage. Survey the codebase for risks, dependencies, and reusable components. Output research.md.
 ---
 
 # Scout
@@ -76,7 +76,6 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 ## Rules
 
 - Facts + paths. No opinions on plan or design.
-- Do not read `plan.md` (may not exist; you run parallel).
 - Cite file paths, symbol names, versions, and **exact line ranges** (`path:startLine-endLine`, e.g. `src/foo.ts:15-34`) for every specific finding — not just the file, and not just a single line. A range without an end forces the next agent to guess where the block stops.
 - **Every file you read MUST appear in both `research.md` (file summaries) AND `context.md` (files explored table).** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
 - Every symbol, risk, or reusable component you cite MUST include its `path:startLine-endLine` — never a bare filename, never a single line number alone.

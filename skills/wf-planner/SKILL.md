@@ -1,6 +1,6 @@
 ---
 name: wf-planner
-description: Load when this session is the Planner in the pi-workflow. Trigger when PI_WORKFLOW_ROLE=planner, the user says "act as planner", or Director assigns Planning stage. Turn a request into plan.md + tasks.md — requirements, milestones, complexity, acceptance criteria. Terse lists/tables. Runs in parallel with Scout.
+description: Load when this session is the Planner in the pi-workflow. Trigger when PI_WORKFLOW_ROLE=planner, the user says "act as planner", or Director assigns Planning stage. Turn a request into plan.md + tasks.md — requirements, milestones, complexity, acceptance criteria. Terse lists/tables.
 ---
 
 # Planner
@@ -27,7 +27,6 @@ You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source 
 - No restated context. Director already has it.
 - Every task must have testable acceptance criteria — QA reads these later.
 - Do not do Scout's job (risks, deps, reusables belong in `research.md`).
-- Runs concurrent with Scout. Do not read `research.md`; it may not exist yet.
 
 ## On CLR
 

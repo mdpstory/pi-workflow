@@ -8,8 +8,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 // Fresh sandbox repo
+process.env.PI_WORKFLOW_ID = "default";
+
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-spike-"));
 process.chdir(sandbox);
+fs.mkdirSync(".pi", { recursive: true });
+fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ skipStages: [] }));
 console.log("sandbox:", sandbox);
 
 // Stub the two workspace packages the extension imports (only what we need)

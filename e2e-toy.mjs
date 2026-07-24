@@ -17,9 +17,13 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execSync } from "node:child_process";
 
+process.env.PI_WORKFLOW_ID = "default";
+
 // ---- sandbox git repo ----
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-e2e-"));
 process.chdir(sandbox);
+fs.mkdirSync(".pi", { recursive: true });
+fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ skipStages: [] }));
 execSync("git init -q && git config user.email test@test.com && git config user.name Test", { stdio: "pipe" });
 console.log("sandbox:", sandbox);
 
@@ -95,20 +99,11 @@ const initSha = gitCommit("chore: init workflow");
 console.log("  init SHA:", initSha.slice(0, 7));
 
 // =========================================================
-//  STAGE 1+2 — PLANNING ∥ RESEARCH  (parallel)
+//  STAGE 1 & 2 — PLANNING -> RESEARCH (sequential)
 // =========================================================
-console.log("\n=== DIRECTOR: start planning + research (parallel) ===");
+console.log("\n=== DIRECTOR: start planning stage ===");
 setRole("director");
 await call("wf_stage_start", { stage: "planning" });
-// Note: wf_stage_start only sets one stage at a time; we set research to in-progress
-// via a second call after tweaking sequencing — but the extension checks prev=done,
-// so we start planning first, then research (allowed because research idx=1, prev=planning not done yet,
-// BUT the spec special-cases planning∥research). We handle this by directly setting research state too.
-// In a real run the director would call wf_stage_start for each peer in sequence of assignment,
-// but the extension only enforces the NEXT stage gate on wf_stage_start, not a "must be current" rule.
-// So we call wf_stage_start research — it checks prev(research)=planning done → not done → normally blocked.
-// The real workflow uses manual peer sessions; both see the same git repo.
-// For the toy script, we simulate by: planner writes + commits, THEN scout writes + commits, THEN director calls task-breakdown.
 
 // ---- PLANNER ----
 console.log("\n--- PLANNER: planning stage ---");
@@ -152,8 +147,14 @@ fs.writeFileSync(".workflow/default/artifacts/tasks.md", `# tasks
 const planningSha = gitCommit("planning: add health endpoint plan + tasks");
 console.log("  planning SHA:", planningSha.slice(0, 7));
 
+setRole("director");
+let rc = await call("wf_stage_complete", { stage: "planning", sha: planningSha });
+assert(rc.details.ok === true, "planning APPROVED");
+
 // ---- SCOUT ----
 console.log("\n--- SCOUT: research stage ---");
+rc = await call("wf_stage_start", { stage: "research" });
+assert(rc.details.ok === true, "research stage started");
 setRole("scout");
 h = await hook("write", { path: ".workflow/default/artifacts/research.md" });
 assert(!h?.block, "scout may write .workflow/default/artifacts/research.md");
@@ -173,6 +174,10 @@ fs.writeFileSync(".workflow/default/artifacts/research.md", `# research
 - \`src/middleware/logger.ts:requestLogger\` — already logs all routes, no extra wiring needed
 `);
 
+fs.writeFileSync(".workflow/default/artifacts/context.md", `# context cache
+- src/app.ts
+`);
+
 const researchSha = gitCommit("research: health endpoint risks + reusables");
 console.log("  research SHA:", researchSha.slice(0, 7));
 
@@ -182,15 +187,6 @@ console.log("  research SHA:", researchSha.slice(0, 7));
 console.log("\n=== DIRECTOR: task-breakdown ===");
 setRole("director");
 
-// Now both planning and research are done (committed), director calls wf_stage_complete on both
-// then wf_stage_start task-breakdown. Extension requires prev stage done.
-// We complete planning first (it was started), then research (start+complete together).
-let rc = await call("wf_stage_complete", { stage: "planning", sha: planningSha });
-assert(rc.details.ok === true, "planning APPROVED");
-
-// Start research explicitly (extension checks planning done → ok now)
-rc = await call("wf_stage_start", { stage: "research" });
-assert(rc.details.ok === true, "research stage started");
 rc = await call("wf_stage_complete", { stage: "research", sha: researchSha });
 assert(rc.details.ok === true, "research APPROVED");
 
@@ -235,10 +231,10 @@ rc = await call("wf_stage_start", { stage: "architecture" });
 assert(rc.details.ok === true, "architecture started");
 
 setRole("architect");
-h = await hook("write", { path: ".workflow/default/artifacts/architecture.md" });
-assert(!h?.block, "architect may write .workflow/default/artifacts/architecture.md");
+h = await hook("write", { path: ".workflow/shared/artifacts/architecture.md" });
+assert(!h?.block, "architect may write .workflow/shared/artifacts/architecture.md");
 
-fs.writeFileSync(".workflow/default/artifacts/architecture.md", `# architecture
+fs.writeFileSync(".workflow/shared/artifacts/architecture.md", `# architecture
 
 ## components
 - \`src/handlers/health.ts\` — new file, exports \`healthHandler\`
@@ -453,9 +449,10 @@ for (const s of stageNames) {
 const clr = JSON.parse(fs.readFileSync(".workflow/default/clr-index.json", "utf8"));
 assert(clr.open.length === 0, "no open CLRs");
 
-// All required artifacts committed and non-stub — now in .workflow/default/artifacts/
+// All required artifacts committed and non-stub — now in .workflow/default/artifacts/ (or shared for architecture.md)
 for (const art of ["plan.md", "tasks.md", "research.md", "architecture.md", "review.md", "test-report.md", "changelog.md"]) {
-	const content = fs.readFileSync(`.workflow/default/artifacts/${art}`, "utf8");
+	const artPath = art === "architecture.md" ? `.workflow/shared/artifacts/${art}` : `.workflow/default/artifacts/${art}`;
+	const content = fs.readFileSync(artPath, "utf8");
 	assert(!content.includes("_empty_"), `${art} is not a stub`);
 }
 

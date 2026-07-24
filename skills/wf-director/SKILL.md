@@ -26,7 +26,7 @@ You route only. Do NOT write plan/research/architecture/review/test-report/chang
 
 1. `wf_init` — creates `.workflow/` + stub artifacts.
 2. Judge trivial? (typo, one-liner, doc-only) → log skip in `decisions.md`, `wf_stage_start implementation`, hand to engineer.
-3. Else: `wf_stage_start planning` and dispatch Planner + Scout in parallel.
+3. Else: `wf_stage_start planning` and dispatch Planner subagent.
 
 ## Subagent dispatch (IMPORTANT — read before spawning)
 
@@ -76,15 +76,15 @@ wf_stage_start <stage>
       BLOCKED  → fix listed errors (usually reassign or resolve CLR), retry
 ```
 
-## Parallel Planning ∥ Research
+## Sequential Planning -> Research
 
-Both run concurrently. You MUST delegate these tasks to dedicated subagents (`agent: "planner"`, `agent: "scout"`). Do NOT attempt to do them yourself. Do NOT reuse existing idle sessions.
+Planning and Research run sequentially in order (`planning` then `research`).
 
-1. Spawn a subagent (`agent: "planner"`, task text: `PI_WORKFLOW_ROLE=planner`) to act as Planner.
-2. Spawn a subagent (`agent: "scout"`, task text: `PI_WORKFLOW_ROLE=scout`) to act as Scout.
-
-
-Both then work independently. Wait for both to notify back with their SHA before `wf_stage_start task-breakdown`.
+1. `wf_stage_start planning` → Spawn subagent (`agent: "planner"`, task text: `PI_WORKFLOW_ROLE=planner`) to act as Planner.
+2. Wait for Planner to notify back with SHA → `wf_stage_complete planning <sha>`.
+3. `wf_stage_start research` → Spawn subagent (`agent: "scout"`, task text: `PI_WORKFLOW_ROLE=scout`) to act as Scout.
+4. Wait for Scout to notify back with SHA → `wf_stage_complete research <sha>`.
+5. Proceed to `wf_stage_start task-breakdown`.
 
 
 ## Task Breakdown
