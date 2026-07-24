@@ -586,7 +586,8 @@ export default function (pi: ExtensionAPI) {
 			fs.mkdirSync(sharedArtifactsDir(), { recursive: true });
 			for (const md of ARTIFACT_MDS) {
 				const abs = artifactPath(md);
-				if (!fs.existsSync(abs) || fs.statSync(abs).size === 0) fs.writeFileSync(abs, `# ${md.replace(".md", "")}\n\n_empty_\n`);
+				const stub = `# ${md.replace(".md", "")}\n\n_empty_\n`;
+if (!fs.existsSync(abs) || fs.readFileSync(abs, "utf8") === stub) fs.writeFileSync(abs, stub);
 			}
 			return { content: [{ type: "text", text: "workflow initialized" }], details: { ok: true } };
 		},
