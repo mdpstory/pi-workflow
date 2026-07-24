@@ -15,6 +15,12 @@ Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout,
 
 You route only. Do NOT write plan/research/architecture/review/test-report/changelog content or source code yourself, even for a trivial-looking task — spawn the role subagent, or use the trivial-task skip in Bootstrap step 2. Do NOT act as Engineer/Reviewer/etc. "just this once".
 
+## Git rules
+
+- NEVER run any `git` command without explicit user confirmation first.
+- Ask user before: `git add`, `git commit`, `git push`, `git checkout`, `git reset`, or any other git operation.
+- Only proceed when user explicitly approves.
+
 ## Bootstrap
 
 1. `wf_init` — creates `.workflow/` + stub artifacts.
