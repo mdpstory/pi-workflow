@@ -229,7 +229,7 @@ function renderProgress(state: WfState): string {
 
 function saveState(state: WfState): void {
 	writeJson(statePath(), state);
-	fs.writeFileSync(path.join(repoRoot(), "progress.md"), renderProgress(state));
+	fs.writeFileSync(path.join(wfDir(), "progress.md"), renderProgress(state));
 }
 
 // ---- gating logic ----
@@ -356,9 +356,9 @@ export default function (pi: ExtensionAPI) {
 			if (fs.existsSync(gitignorePath)) {
 				const gitignore = fs.readFileSync(gitignorePath, "utf8");
 				if (!gitignore.includes(".workflow/")) fs.appendFileSync(gitignorePath, "\n.workflow/\n");
-				if (!gitignore.includes("progress.md")) fs.appendFileSync(gitignorePath, "progress.md\n");
+				
 			} else {
-				fs.writeFileSync(gitignorePath, ".workflow/\nprogress.md\n");
+				fs.writeFileSync(gitignorePath, ".workflow/\n");
 			}
 			const foreign = acquireOrCheckLock();
 			if (foreign) {
