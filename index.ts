@@ -58,14 +58,16 @@ const ROLE_FOR_STAGE: Record<Stage, string> = {
 
 // Which paths each role may write/edit. Empty = source code allowed, artifacts denied.
 const ROLE_ALLOW: Record<string, RegExp[]> = {
-	director: [/^\.workflow\//, /^progress\.md$/],
-	planner: [/^\.workflow\/artifacts\/plan\.md$/, /^\.workflow\/artifacts\/tasks\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	scout: [/^\.workflow\/artifacts\/research\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	architect: [/^\.workflow\/artifacts\/architecture\.md$/, /^\.workflow\/artifacts\/decisions\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	engineer: [/^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/], // + source (default allow below)
-	reviewer: [/^\.workflow\/artifacts\/review\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	qa: [/^\.workflow\/artifacts\/test-report\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
-	documenter: [/^\.workflow\/artifacts\/changelog\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^docs\//, /^README\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	// NOTE: patterns are matched against the path *inside* the current session's
+// .workflow/<id>/ namespace (prefix already stripped) — see isPathAllowedForRole.
+director: [/^.*$/], // director may write any state file within its own namespace
+	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
+	scout: [/^artifacts\/research\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
+	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
+	engineer: [/^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/], // + source (default allow below)
+	reviewer: [/^artifacts\/review\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
+	qa: [/^artifacts\/test-report\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
+	documenter: [/^artifacts\/changelog\.md$/, /^artifacts\/context\.md$/, /^docs\//, /^README\.md$/, /^artifacts\/clarifications\.md$/],
 };
 
 // Artifact md files. Anything not in this set is treated as "source" and allowed for engineer.
@@ -104,8 +106,20 @@ interface ClrIndex {
 function repoRoot(): string {
 	return process.cwd();
 }
-function wfDir(): string {
+// Sanitized workflow namespace id — lets multiple independent workflows
+// (different features) run concurrently in the same repo, each with its
+// own .workflow/<id>/ lock, state, and artifacts. Default "default" keeps
+// single-workflow usage unchanged.
+function workflowId(): string {
+	const raw = process.env.PI_WORKFLOW_ID ?? "default";
+	const safe = raw.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
+	return safe || "default";
+}
+function wfRoot(): string {
 	return path.join(repoRoot(), ".workflow");
+}
+function wfDir(): string {
+	return path.join(wfRoot(), workflowId());
 }
 function artifactsDir(): string {
 	return path.join(wfDir(), "artifacts");
@@ -235,31 +249,52 @@ function saveState(state: WfState): void {
 
 // ---- gating logic ----
 
+// Returns the path relative to *this session's* .workflow/<id>/ namespace,
+// or null if relPath isn't inside any .workflow/ namespace at all (source code).
+// Returns { foreign: true } info via thrown-free sentinel string when the path
+// belongs to a *different* workflow id — cross-namespace writes are always denied.
+function wfNamespaceRel(relPath: string): { inside: false } | { inside: true; foreign: boolean; inner: string } {
+	if (!relPath.startsWith(".workflow/")) return { inside: false };
+	const rest = relPath.slice(".workflow/".length); // "<id>/..." or bare (legacy)
+	const slash = rest.indexOf("/");
+	if (slash === -1) return { inside: true, foreign: false, inner: rest }; // e.g. .workflow/director.lock (legacy, treat as own)
+	const id = rest.slice(0, slash);
+	const inner = rest.slice(slash + 1);
+	return { inside: true, foreign: id !== workflowId(), inner };
+}
+
 function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason?: string } {
 	const allow = ROLE_ALLOW[r];
 	if (!allow) return { ok: false, reason: `unknown role "${r}"` };
 
-	// .workflow/ state files (not artifacts): director only.
-	if (relPath.startsWith(".workflow/") && !relPath.startsWith(".workflow/artifacts/")) {
-		return r === "director" ? { ok: true } : { ok: false, reason: `only director may write .workflow/ state files` };
+	const ns = wfNamespaceRel(relPath);
+	if (ns.inside) {
+		// Cross-namespace: never allowed, regardless of role. Keeps concurrent
+		// workflows (different PI_WORKFLOW_ID in the same repo) isolated.
+		if (ns.foreign) {
+			return { ok: false, reason: `path belongs to a different workflow namespace than PI_WORKFLOW_ID=${workflowId()}` };
+		}
+
+		// Non-artifact state files (state.json, clr-index.json, director.lock, progress.md): director only.
+		const isArtifact = ns.inner.startsWith("artifacts/");
+		if (!isArtifact) {
+			return r === "director" ? { ok: true } : { ok: false, reason: `only director may write .workflow/${workflowId()}/ state files` };
+		}
+
+		// Artifact: must match role allowlist (patterns matched against the inner path, e.g. "artifacts/plan.md").
+		const match = allow.some((re) => re.test(ns.inner));
+		return match
+			? { ok: true }
+			: { ok: false, reason: `${r} not permitted to write ${relPath}` };
 	}
 
 	// Non-artifact source: engineer + qa (for test files) + documenter allowed by default.
-	const isArtifact = relPath.startsWith(".workflow/artifacts/");
-	if (!isArtifact) {
-		if (r === "engineer" || r === "qa" || r === "documenter") return { ok: true };
-		// Others may not touch source.
-		// Give a helpful hint if the filename looks like a misplaced artifact.
-		const basename = relPath.split("/").pop() || relPath;
-		const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/artifacts/${basename}?)` : "";
-		return { ok: false, reason: `${r} may not modify source (${relPath})${hint}` };
-	}
-
-	// Artifact: must match role allowlist.
-	const match = allow.some((re) => re.test(relPath));
-	return match
-		? { ok: true }
-		: { ok: false, reason: `${r} not permitted to write ${relPath}` };
+	if (r === "engineer" || r === "qa" || r === "documenter") return { ok: true };
+	// Others may not touch source.
+	// Give a helpful hint if the filename looks like a misplaced artifact.
+	const basename = relPath.split("/").pop() || relPath;
+	const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${workflowId()}/artifacts/${basename}?)` : "";
+	return { ok: false, reason: `${r} may not modify source (${relPath})${hint}` };
 }
 
 function clrBlocksStage(clr: ClrIndex, currentStage: Stage | null): { blocked: boolean; ids: string[] } {
@@ -329,9 +364,10 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `pi-workflow: ${allow.reason}` };
 		}
 
-		// 2. CLR gate — exempt .workflow/ state files and clarifications.md; artifacts still gated.
-		const isWfState = rel.startsWith(".workflow/") && !rel.startsWith(".workflow/artifacts/");
-		const isClarifications = rel === ".workflow/artifacts/clarifications.md";
+		// 2. CLR gate — exempt .workflow/<id>/ state files and clarifications.md; artifacts still gated.
+		const ns = wfNamespaceRel(rel);
+		const isWfState = ns.inside && !ns.foreign && !ns.inner.startsWith("artifacts/");
+		const isClarifications = ns.inside && !ns.foreign && ns.inner === "artifacts/clarifications.md";
 		if (!isWfState && !isClarifications) {
 			const state = loadState();
 			const clr = loadClr();
@@ -371,8 +407,8 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{
 						type: "text",
-						text: `BLOCKED: another director session is already running this workflow (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}, last heartbeat ${foreign.heartbeatAt}). ` +
-							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel, run this workflow in a separate git worktree instead.`,
+						text: `BLOCKED: another director session is already running workflow "${workflowId()}" (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}, last heartbeat ${foreign.heartbeatAt}). ` +
+							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel in this same repo, set a distinct PI_WORKFLOW_ID (e.g. PI_WORKFLOW_ID=notifications) before calling wf_init — each id gets its own isolated .workflow/<id>/ lock, state, and artifacts. Alternatively use a separate git worktree.`,
 					}],
 					details: { ok: false, decision: "LOCKED", lock: foreign },
 				};
@@ -421,7 +457,7 @@ export default function (pi: ExtensionAPI) {
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
 			const hint = [
 				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
-				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole}" and load skill "wf-${delegateRole}".`,
+				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole} PI_WORKFLOW_ID=${workflowId()}" and load skill "wf-${delegateRole}".`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
 				`When finished, call wf_stage_complete("${target}", sha).`,
@@ -621,6 +657,7 @@ export default function (pi: ExtensionAPI) {
 				: "lock: none";
 			const lines = [
 				`role: ${role()}`,
+				`workflow id: ${workflowId()}`,
 				`current: ${state.current ?? "—"}`,
 				`open CLRs: ${clr.open.length ? clr.open.map((c) => `${c.id}(${c.stage})`).join(", ") : "none"}`,
 				lockLine,

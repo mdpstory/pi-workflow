@@ -30,6 +30,27 @@ pi install -l git:github.com/mdpstory/pi-workflow
 
 Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`).
 
+### Running multiple workflows in the same repo
+
+Set `PI_WORKFLOW_ID` (default `"default"`) to namespace a workflow. Each id
+gets its own isolated `.workflow/<id>/` lock, state, and artifacts, so two
+independent features can each run their own director + role pipeline in the
+same repo/session pair at the same time without colliding:
+
+```bash
+# session A — feature
+PI_WORKFLOW_ROLE=director PI_WORKFLOW_ID=feature-x pi ...
+
+# session B — notifications, same repo, at the same time
+PI_WORKFLOW_ROLE=director PI_WORKFLOW_ID=notifications pi ...
+```
+
+Cross-namespace writes are hard-blocked for every role (even director), so a
+`notifications` session can never touch `feature-x`'s artifacts or state.
+When a director delegates to a subagent, it must pass both env vars:
+`PI_WORKFLOW_ROLE=<role> PI_WORKFLOW_ID=<id>` (the `wf_stage_start` delegation
+hint already includes this).
+
 ## Testing
 
 ```bash

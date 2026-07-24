@@ -89,8 +89,8 @@ function setRole(r) { process.env.PI_WORKFLOW_ROLE = r; }
 console.log("\n=== DIRECTOR: wf_init ===");
 setRole("director");
 await call("wf_init");
-assert(fs.existsSync(".workflow/state.json"), "state.json exists");
-assert(fs.existsSync(".workflow/progress.md"), "progress.md exists");
+assert(fs.existsSync(".workflow/default/state.json"), "state.json exists");
+assert(fs.existsSync(".workflow/default/progress.md"), "progress.md exists");
 // initial commit so SHA is always reachable
 const initSha = gitCommit("chore: init workflow");
 console.log("  init SHA:", initSha.slice(0, 7));
@@ -114,11 +114,11 @@ await call("wf_stage_start", { stage: "planning" });
 // ---- PLANNER ----
 console.log("\n--- PLANNER: planning stage ---");
 setRole("planner");
-// Verify planner can write .workflow/artifacts/plan.md (hook allows)
-let h = await hook("write", { path: ".workflow/artifacts/plan.md" });
-assert(!h?.block, "planner may write .workflow/artifacts/plan.md");
+// Verify planner can write .workflow/default/artifacts/plan.md (hook allows)
+let h = await hook("write", { path: ".workflow/default/artifacts/plan.md" });
+assert(!h?.block, "planner may write .workflow/default/artifacts/plan.md");
 
-fs.writeFileSync(".workflow/artifacts/plan.md", `# plan
+fs.writeFileSync(".workflow/default/artifacts/plan.md", `# plan
 
 ## goal
 Add a \`GET /health\` endpoint that returns \`{"status":"ok","ts":<unix-ms>}\`.
@@ -141,7 +141,7 @@ Add a \`GET /health\` endpoint that returns \`{"status":"ok","ts":<unix-ms>}\`.
 XS — one file change + one test.
 `);
 
-fs.writeFileSync(".workflow/artifacts/tasks.md", `# tasks
+fs.writeFileSync(".workflow/default/artifacts/tasks.md", `# tasks
 
 | ID | Task | Acceptance criteria | Deps |
 |----|------|---------------------|------|
@@ -156,10 +156,10 @@ console.log("  planning SHA:", planningSha.slice(0, 7));
 // ---- SCOUT ----
 console.log("\n--- SCOUT: research stage ---");
 setRole("scout");
-h = await hook("write", { path: ".workflow/artifacts/research.md" });
-assert(!h?.block, "scout may write .workflow/artifacts/research.md");
+h = await hook("write", { path: ".workflow/default/artifacts/research.md" });
+assert(!h?.block, "scout may write .workflow/default/artifacts/research.md");
 
-fs.writeFileSync(".workflow/artifacts/research.md", `# research
+fs.writeFileSync(".workflow/default/artifacts/research.md", `# research
 
 ## risks
 - R1: Express version in package.json may not be installed — check before writing handler
@@ -201,10 +201,10 @@ assert(rc.details.ok === true, "task-breakdown started");
 
 // Director reconciles plan.md + research.md → updates tasks.md
 setRole("director");
-h = await hook("write", { path: ".workflow/artifacts/tasks.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/tasks.md" });
 assert(!h?.block, "director may write tasks.md");
 
-fs.writeFileSync(".workflow/artifacts/tasks.md", `# tasks (reconciled)
+fs.writeFileSync(".workflow/default/artifacts/tasks.md", `# tasks (reconciled)
 
 | ID | Task | Acceptance criteria | Deps | Notes |
 |----|------|---------------------|------|-------|
@@ -214,9 +214,9 @@ fs.writeFileSync(".workflow/artifacts/tasks.md", `# tasks (reconciled)
 `);
 
 // Director logs reconciliation decision
-h = await hook("write", { path: ".workflow/artifacts/decisions.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/decisions.md" });
 assert(!h?.block, "director may write decisions.md");
-fs.appendFileSync(".workflow/artifacts/decisions.md", `
+fs.appendFileSync(".workflow/default/artifacts/decisions.md", `
 ## task-breakdown reconciliation
 - T2: R2 (auth guard at root) → register /health before auth middleware mount point in createApp().
 - T3: acceptance criteria from plan carried through unchanged.
@@ -236,10 +236,10 @@ rc = await call("wf_stage_start", { stage: "architecture" });
 assert(rc.details.ok === true, "architecture started");
 
 setRole("architect");
-h = await hook("write", { path: ".workflow/artifacts/architecture.md" });
-assert(!h?.block, "architect may write .workflow/artifacts/architecture.md");
+h = await hook("write", { path: ".workflow/default/artifacts/architecture.md" });
+assert(!h?.block, "architect may write .workflow/default/artifacts/architecture.md");
 
-fs.writeFileSync(".workflow/artifacts/architecture.md", `# architecture
+fs.writeFileSync(".workflow/default/artifacts/architecture.md", `# architecture
 
 ## components
 - \`src/handlers/health.ts\` — new file, exports \`healthHandler\`
@@ -263,9 +263,9 @@ Alternative: separate unauthenticated router — rejected (overkill for one rout
 `);
 
 // Architect appends to decisions.md
-h = await hook("write", { path: ".workflow/artifacts/decisions.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/decisions.md" });
 assert(!h?.block, "architect may append decisions.md");
-fs.appendFileSync(".workflow/artifacts/decisions.md", `
+fs.appendFileSync(".workflow/default/artifacts/decisions.md", `
 ## design: /health before auth
 Mount /health before auth guard. Auth guard currently in createApp() at line ~30.
 Alternative (separate unauth router) rejected — too heavy for one route.
@@ -289,7 +289,7 @@ setRole("engineer");
 // Engineer writes source files (not artifact .md)
 h = await hook("write", { path: "src/handlers/health.ts" });
 assert(!h?.block, "engineer may write source");
-h = await hook("write", { path: ".workflow/artifacts/plan.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/plan.md" });
 assert(h?.block, "engineer BLOCKED from plan.md");
 
 fs.mkdirSync("src/handlers", { recursive: true });
@@ -330,10 +330,10 @@ rc = await call("wf_stage_start", { stage: "review" });
 assert(rc.details.ok === true, "review started");
 
 setRole("reviewer");
-h = await hook("write", { path: ".workflow/artifacts/review.md" });
-assert(!h?.block, "reviewer may write .workflow/artifacts/review.md");
+h = await hook("write", { path: ".workflow/default/artifacts/review.md" });
+assert(!h?.block, "reviewer may write .workflow/default/artifacts/review.md");
 
-fs.writeFileSync(".workflow/artifacts/review.md", `# review
+fs.writeFileSync(".workflow/default/artifacts/review.md", `# review
 
 ## verdict: APPROVED
 
@@ -365,8 +365,8 @@ rc = await call("wf_stage_start", { stage: "testing" });
 assert(rc.details.ok === true, "testing started");
 
 setRole("qa");
-h = await hook("write", { path: ".workflow/artifacts/test-report.md" });
-assert(!h?.block, "qa may write .workflow/artifacts/test-report.md");
+h = await hook("write", { path: ".workflow/default/artifacts/test-report.md" });
+assert(!h?.block, "qa may write .workflow/default/artifacts/test-report.md");
 h = await hook("write", { path: "tests/health.test.ts" });
 assert(!h?.block, "qa may write test files");
 
@@ -385,7 +385,7 @@ describe("GET /health", () => {
 });
 `);
 
-fs.writeFileSync(".workflow/artifacts/test-report.md", `# test-report
+fs.writeFileSync(".workflow/default/artifacts/test-report.md", `# test-report
 
 ## result: PASS
 
@@ -415,10 +415,10 @@ rc = await call("wf_stage_start", { stage: "documentation" });
 assert(rc.details.ok === true, "documentation started");
 
 setRole("documenter");
-h = await hook("write", { path: ".workflow/artifacts/changelog.md" });
-assert(!h?.block, "documenter may write .workflow/artifacts/changelog.md");
+h = await hook("write", { path: ".workflow/default/artifacts/changelog.md" });
+assert(!h?.block, "documenter may write .workflow/default/artifacts/changelog.md");
 
-fs.writeFileSync(".workflow/artifacts/changelog.md", `# changelog
+fs.writeFileSync(".workflow/default/artifacts/changelog.md", `# changelog
 
 ## [unreleased]
 
@@ -444,24 +444,24 @@ const statusText = status.content[0].text;
 console.log(statusText);
 
 // All 8 stages must be "done" in state.json
-const state = JSON.parse(fs.readFileSync(".workflow/state.json", "utf8"));
+const state = JSON.parse(fs.readFileSync(".workflow/default/state.json", "utf8"));
 const stageNames = ["planning", "research", "task-breakdown", "architecture", "implementation", "review", "testing", "documentation"];
 for (const s of stageNames) {
 	assert(state.stages[s].status === "done", `stage ${s} = done`);
 }
 
 // No open CLRs
-const clr = JSON.parse(fs.readFileSync(".workflow/clr-index.json", "utf8"));
+const clr = JSON.parse(fs.readFileSync(".workflow/default/clr-index.json", "utf8"));
 assert(clr.open.length === 0, "no open CLRs");
 
 // progress.md has all ✅
-const progress = fs.readFileSync(".workflow/progress.md", "utf8");
+const progress = fs.readFileSync(".workflow/default/progress.md", "utf8");
 const checkCount = (progress.match(/✅/g) || []).length;
 assert(checkCount === 8, `progress.md has 8 ✅ (got ${checkCount})`);
 
-// All required artifacts committed and non-stub — now in .workflow/artifacts/
+// All required artifacts committed and non-stub — now in .workflow/default/artifacts/
 for (const art of ["plan.md", "tasks.md", "research.md", "architecture.md", "review.md", "test-report.md", "changelog.md"]) {
-	const content = fs.readFileSync(`.workflow/artifacts/${art}`, "utf8");
+	const content = fs.readFileSync(`.workflow/default/artifacts/${art}`, "utf8");
 	assert(!content.includes("_empty_"), `${art} is not a stub`);
 }
 

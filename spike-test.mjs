@@ -92,9 +92,9 @@ function assert(cond, msg) {
 console.log("\n=== 1. director init ===");
 process.env.PI_WORKFLOW_ROLE = "director";
 await call("wf_init");
-assert(fs.existsSync(".workflow/state.json"), "state.json created");
-assert(fs.existsSync("progress.md"), "progress.md created");
-assert(fs.existsSync(".workflow/artifacts/plan.md"), "plan.md stub created in artifacts/");
+assert(fs.existsSync(".workflow/default/state.json"), "state.json created");
+assert(fs.existsSync(".workflow/default/progress.md"), "progress.md created");
+assert(fs.existsSync(".workflow/default/artifacts/plan.md"), "plan.md stub created in artifacts/");
 
 console.log("\n=== 2. non-director may NOT init ===");
 process.env.PI_WORKFLOW_ROLE = "engineer";
@@ -103,23 +103,23 @@ assert(r.details.ok === false, "engineer denied wf_init");
 
 console.log("\n=== 3. role path allowlist ===");
 process.env.PI_WORKFLOW_ROLE = "planner";
-let h = await hook("write", { path: ".workflow/artifacts/plan.md" });
+let h = await hook("write", { path: ".workflow/default/artifacts/plan.md" });
 assert(!h?.block, "planner may write .workflow/artifacts/plan.md");
-h = await hook("write", { path: ".workflow/artifacts/architecture.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/architecture.md" });
 assert(h?.block, "planner BLOCKED from architecture.md");
-h = await hook("write", { path: "progress.md" });
+h = await hook("write", { path: ".workflow/default/progress.md" });
 assert(h?.block, "planner BLOCKED from progress.md");
 
 process.env.PI_WORKFLOW_ROLE = "engineer";
 h = await hook("write", { path: "src/foo.ts" });
 assert(!h?.block, "engineer may write source");
-h = await hook("write", { path: ".workflow/artifacts/plan.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/plan.md" });
 assert(h?.block, "engineer BLOCKED from plan.md");
-h = await hook("write", { path: ".workflow/state.json" });
+h = await hook("write", { path: ".workflow/default/state.json" });
 assert(h?.block, "engineer BLOCKED from .workflow/ state files");
 
 process.env.PI_WORKFLOW_ROLE = "director";
-h = await hook("write", { path: ".workflow/state.json" });
+h = await hook("write", { path: ".workflow/default/state.json" });
 assert(!h?.block, "director may write .workflow/");
 h = await hook("write", { path: "src/foo.ts" });
 assert(h?.block, "director BLOCKED from source code");
@@ -133,8 +133,8 @@ assert(rc.details.ok === false, "planning complete BLOCKED — plan.md is stub")
 
 // Planner writes real content
 process.env.PI_WORKFLOW_ROLE = "planner";
-fs.writeFileSync(".workflow/artifacts/plan.md", "# plan\n- do the thing\n");
-fs.writeFileSync(".workflow/artifacts/tasks.md", "# tasks\n- T1: do the thing\n");
+fs.writeFileSync(".workflow/default/artifacts/plan.md", "# plan\n- do the thing\n");
+fs.writeFileSync(".workflow/default/artifacts/tasks.md", "# tasks\n- T1: do the thing\n");
 
 process.env.PI_WORKFLOW_ROLE = "director";
 rc = await call("wf_stage_complete", { stage: "planning", sha: "abc1234" });
@@ -151,17 +151,17 @@ process.env.PI_WORKFLOW_ROLE = "scout";
 const clr = await call("wf_clr_open", { stage: "research", question: "which db?" });
 const clrId = clr.details.id;
 // Now scout should be BLOCKED from writing research.md
-h = await hook("write", { path: ".workflow/artifacts/research.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/research.md" });
 assert(h?.block, `scout BLOCKED from research.md while ${clrId} open`);
 // clarifications.md still allowed
-h = await hook("write", { path: ".workflow/artifacts/clarifications.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/clarifications.md" });
 assert(!h?.block, "clarifications.md still writable while CLR open");
 
 // Director resolves
 process.env.PI_WORKFLOW_ROLE = "director";
 await call("wf_clr_resolve", { id: clrId, resolution: "use sqlite" });
 process.env.PI_WORKFLOW_ROLE = "scout";
-h = await hook("write", { path: ".workflow/artifacts/research.md" });
+h = await hook("write", { path: ".workflow/default/artifacts/research.md" });
 assert(!h?.block, "scout unblocked after CLR resolved");
 
 console.log("\n=== 6. retry counters ===");
@@ -179,7 +179,7 @@ assert(rr.details.ok === false, "engineer denied wf_retry_rule");
 process.env.PI_WORKFLOW_ROLE = "director";
 rr = await call("wf_retry_rule", { key: "defect-x", ruling: "try again with X" });
 assert(rr.details.ruled === 1 && rr.details.bumps === 0, "ruling 1 → bumps reset");
-assert(fs.readFileSync(".workflow/artifacts/decisions.md", "utf8").includes("ruling on defect-x"), "decisions.md logged");
+assert(fs.readFileSync(".workflow/default/artifacts/decisions.md", "utf8").includes("ruling on defect-x"), "decisions.md logged");
 
 process.env.PI_WORKFLOW_ROLE = "engineer";
 await call("wf_retry_bump", { key: "defect-x" });
@@ -206,7 +206,7 @@ assert(rSkip.details.ok === true && rSkip.details.decision === "SKIPPED", "skip 
 assert(rSkip.details.skipped.join(",") === "research,task-breakdown,architecture", "skipped research→architecture");
 const sSkip = await call("wf_status");
 assert(/current: implementation/.test(sSkip.content[0].text), "current jumped to implementation");
-assert(fs.readFileSync("decisions.md", "utf8").includes("trivial-task skip"), "decisions.md logs skip");
+assert(fs.readFileSync(".workflow/default/artifacts/decisions.md", "utf8").includes("trivial-task skip"), "decisions.md logs skip");
 // Skip on implementation itself → denied
 let rSkipBad = await call("wf_stage_complete", { stage: "implementation", sha: "deadbee", skip: "nope" });
 assert(rSkipBad.details.ok === false, "skip on implementation denied");
@@ -232,6 +232,6 @@ const s = await call("wf_status");
 console.log(s.content[0].text);
 
 console.log("\n=== progress.md ===");
-console.log(fs.readFileSync("progress.md", "utf8"));
+console.log(fs.readFileSync(".workflow/default/progress.md", "utf8"));
 
 console.log(process.exitCode ? "\n✗ some assertions FAILED" : "\n✓ all assertions passed");
