@@ -285,6 +285,11 @@ function resetToolCalls(): void {
 export default function (pi: ExtensionAPI) {
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
 	pi.on("tool_call", async (event, _ctx) => {
+		// No PI_WORKFLOW_ROLE set at all → this session isn't part of a
+		// workflow run. Don't limit tool calls or gate writes.
+		const r0 = roleOrNull();
+		if (r0 === null) return undefined;
+
 		toolCalls += 1;
 
 		// 50-tool ceiling. Above cap, only allow write/edit so the agent can
@@ -302,11 +307,6 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
-
-		// No PI_WORKFLOW_ROLE set at all → this session isn't part of a
-		// workflow run. Don't gate its writes as if it were the director.
-		const r0 = roleOrNull();
-		if (r0 === null) return undefined;
 
 		const p = (event.input as { path?: string }).path;
 		if (!p) return undefined;
