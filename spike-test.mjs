@@ -93,7 +93,6 @@ console.log("\n=== 1. director init ===");
 process.env.PI_WORKFLOW_ROLE = "director";
 await call("wf_init");
 assert(fs.existsSync(".workflow/default/state.json"), "state.json created");
-assert(fs.existsSync(".workflow/default/progress.md"), "progress.md created");
 assert(fs.existsSync(".workflow/default/artifacts/plan.md"), "plan.md stub created in artifacts/");
 
 console.log("\n=== 2. non-director may NOT init ===");
@@ -107,8 +106,6 @@ let h = await hook("write", { path: ".workflow/default/artifacts/plan.md" });
 assert(!h?.block, "planner may write .workflow/artifacts/plan.md");
 h = await hook("write", { path: ".workflow/default/artifacts/architecture.md" });
 assert(h?.block, "planner BLOCKED from architecture.md");
-h = await hook("write", { path: ".workflow/default/progress.md" });
-assert(h?.block, "planner BLOCKED from progress.md");
 
 process.env.PI_WORKFLOW_ROLE = "engineer";
 h = await hook("write", { path: "src/foo.ts" });
@@ -230,8 +227,5 @@ assert(hardStopped, "write BLOCKED with hard-stop after grace margin");
 console.log("\n=== 7. wf_status ===");
 const s = await call("wf_status");
 console.log(s.content[0].text);
-
-console.log("\n=== progress.md ===");
-console.log(fs.readFileSync(".workflow/default/progress.md", "utf8"));
 
 console.log(process.exitCode ? "\n✗ some assertions FAILED" : "\n✓ all assertions passed");

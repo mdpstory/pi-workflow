@@ -20,7 +20,7 @@
  * ~/.pi/agent/pi-workflow.json.
  * State: .workflow/<id>/state.json, .workflow/<id>/clr-index.json
  * Artifacts (per-workflow, .workflow/<id>/artifacts/): plan.md, tasks.md, research.md,
- *            decisions.md, clarifications.md, progress.md, review.md, test-report.md, changelog.md
+ *            decisions.md, clarifications.md, review.md, test-report.md, changelog.md
  * Shared artifact (.workflow/shared/artifacts/, one copy for the whole repo across all
  *            parallel workflow ids — architecture is a codebase property, not a task property):
  *            architecture.md
@@ -87,8 +87,6 @@ director: [/^.*$/], // director may write any state file within its own namespac
 };
 
 // Artifact md files. Anything not in this set is treated as "source" and allowed for engineer.
-// NOTE: progress.md is deliberately excluded — it's auto-rendered by saveState() straight to
-// .workflow/<id>/progress.md (not artifacts/), so it must never be stubbed or hand-edited.
 const ARTIFACT_MDS = new Set([
 	"plan.md",
 	"tasks.md",
@@ -367,31 +365,8 @@ function stampArchitecture(sha: string): void {
 	fs.writeFileSync(p, text);
 }
 
-// ---- progress.md renderer ----
-
-const SYMBOL: Record<string, string> = {
-	todo: "⬜",
-	"in-progress": "⏳",
-	done: "✅",
-	blocked: "🔴",
-	retry: "🔁",
-	failed: "❌",
-};
-
-function renderProgress(state: WfState): string {
-	const rows = STAGES.map((s) => {
-		const st = state.stages[s];
-		const sym = SYMBOL[st.status] || "?";
-		const sha = st.sha ? ` \`${st.sha.slice(0, 7)}\`` : "";
-		const retries = st.retries ? ` (${st.retries}/3)` : "";
-		return `| ${sym} | ${s}${retries}${sha} |`;
-	}).join("\n");
-	return `# progress\n\n| status | stage |\n|---|---|\n${rows}\n\n_current: ${state.current ?? "—"}_\n`;
-}
-
 function saveState(state: WfState): void {
 	writeJson(statePath(), state);
-	fs.writeFileSync(path.join(wfDir(), "progress.md"), renderProgress(state));
 }
 
 // ---- gating logic ----
@@ -439,7 +414,7 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 				: { ok: false, reason: `${r} not permitted to write ${relPath}` };
 		}
 
-		// Non-artifact state files (state.json, clr-index.json, director.lock, progress.md): director only.
+		// Non-artifact state files (state.json, clr-index.json, director.lock): director only.
 		const isArtifact = ns.inner.startsWith("artifacts/");
 		if (!isArtifact) {
 			return r === "director" ? { ok: true } : { ok: false, reason: `only director may write .workflow/${workflowId()}/ state files` };
@@ -458,9 +433,7 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 	// Give a helpful hint if the filename looks like a misplaced artifact.
 	const basename = relPath.split("/").pop() || relPath;
 	const hintDir = SHARED_ARTIFACTS.has(basename) ? "shared" : workflowId();
-	const hint = basename === "progress.md"
-		? ` (progress.md is auto-generated at .workflow/${workflowId()}/progress.md — do not write it manually)`
-		: ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${hintDir}/artifacts/${basename}?)` : "";
+	const hint = ARTIFACT_MDS.has(basename) ? ` (did you mean .workflow/${hintDir}/artifacts/${basename}?)` : "";
 	return { ok: false, reason: `${r} may not modify source (${relPath})${hint}` };
 }
 
@@ -842,8 +815,7 @@ if (content === null || content === "" || content === stub) fs.writeFileSync(abs
 			}
 			rec.bumps += 1;
 			state.rulings[params.key] = rec;
-			// Mirror onto the current stage's retry counter so wf_stage_complete's retry-cap
-			// check and the progress.md "(n/3)" annotation actually reflect real bumps.
+			// Mirror onto the current stage's retry counter so wf_stage_complete's retry-cap check reflects real bumps.
 			if (state.current) {
 				state.stages[state.current].retries = (state.stages[state.current].retries ?? 0) + 1;
 			}

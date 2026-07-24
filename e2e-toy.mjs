@@ -90,7 +90,6 @@ console.log("\n=== DIRECTOR: wf_init ===");
 setRole("director");
 await call("wf_init");
 assert(fs.existsSync(".workflow/default/state.json"), "state.json exists");
-assert(fs.existsSync(".workflow/default/progress.md"), "progress.md exists");
 // initial commit so SHA is always reachable
 const initSha = gitCommit("chore: init workflow");
 console.log("  init SHA:", initSha.slice(0, 7));
@@ -454,11 +453,6 @@ for (const s of stageNames) {
 const clr = JSON.parse(fs.readFileSync(".workflow/default/clr-index.json", "utf8"));
 assert(clr.open.length === 0, "no open CLRs");
 
-// progress.md has all ✅
-const progress = fs.readFileSync(".workflow/default/progress.md", "utf8");
-const checkCount = (progress.match(/✅/g) || []).length;
-assert(checkCount === 8, `progress.md has 8 ✅ (got ${checkCount})`);
-
 // All required artifacts committed and non-stub — now in .workflow/default/artifacts/
 for (const art of ["plan.md", "tasks.md", "research.md", "architecture.md", "review.md", "test-report.md", "changelog.md"]) {
 	const content = fs.readFileSync(`.workflow/default/artifacts/${art}`, "utf8");
@@ -469,9 +463,6 @@ for (const art of ["plan.md", "tasks.md", "research.md", "architecture.md", "rev
 assert(fs.existsSync("src/handlers/health.ts"), "src/handlers/health.ts exists");
 assert(fs.existsSync("src/app.ts"), "src/app.ts exists");
 assert(fs.existsSync("tests/health.test.ts"), "tests/health.test.ts exists");
-
-console.log("\n=== progress.md ===");
-console.log(progress);
 
 console.log("\n=== git log ===");
 console.log(execSync("git log --oneline", { encoding: "utf8" }));

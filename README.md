@@ -25,7 +25,6 @@ pi install -l git:github.com/mdpstory/pi-workflow
 - Per-role path allowlist (hard-blocks wrong-role writes).
 - CLR gate (hard-blocks writes while a clarification is open).
 - Stage sequencing (can't skip stages without an explicit trivial-task escape hatch).
-- `progress.md` auto-rendered from `.workflow/state.json`.
 - 8 role SKILL.md files under `skills/wf-*`.
 
 Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`).
