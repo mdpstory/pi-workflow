@@ -53,10 +53,10 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
    _Last updated: <timestamp>_
 
    ## files explored
-   | path | purpose | key exports | notes |
-   |------|---------|-------------|-------|
-   | `src/foo.ts` | Manages foo operations | `Foo`, `createFoo()`, `FooConfig` | Uses bar internally |
-   | `src/bar.ts` | Bar utility | `bar()` | Pure function, no side effects |
+   | path | purpose | key exports (with line) | notes |
+   |------|---------|--------------------------|-------|
+   | `src/foo.ts` | Manages foo operations | `Foo` @L15-34, `createFoo()` @L42-58, `FooConfig` @L8-13 | Uses bar internally |
+   | `src/bar.ts` | Bar utility | `bar()` @L3-9 | Pure function, no side effects |
 
    ## architecture observations
    - <high-level pattern you noticed: e.g. "uses event emitter pattern", "all handlers follow same interface">
@@ -77,8 +77,9 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 
 - Facts + paths. No opinions on plan or design.
 - Do not read `plan.md` (may not exist; you run parallel).
-- Cite file paths, symbol names, versions.
+- Cite file paths, symbol names, versions, and **exact line ranges** (`path:startLine-endLine`, e.g. `src/foo.ts:15-34`) for every specific finding — not just the file, and not just a single line. A range without an end forces the next agent to guess where the block stops.
 - **Every file you read MUST appear in both `research.md` (file summaries) AND `context.md` (files explored table).** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
+- Every symbol, risk, or reusable component you cite MUST include its `path:startLine-endLine` — never a bare filename, never a single line number alone.
 - Be thorough in file summaries. A good summary saves Architect 10+ tool calls per file.
 
 ## On CLR

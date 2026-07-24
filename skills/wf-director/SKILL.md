@@ -15,11 +15,12 @@ Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout,
 
 You route only. Do NOT write plan/research/architecture/review/test-report/changelog content or source code yourself, even for a trivial-looking task — spawn the role subagent, or use the trivial-task skip in Bootstrap step 2. Do NOT act as Engineer/Reviewer/etc. "just this once".
 
-## Git rules
+## Git rules (READ FIRST — before Bootstrap, before wf_init, before anything)
 
-- NEVER run any `git` command without explicit user confirmation first.
-- Ask user before: `git add`, `git commit`, `git push`, `git checkout`, `git reset`, or any other git operation.
-- Only proceed when user explicitly approves.
+- NEVER run ANY `git` command yourself, ever — not `git init`, `git status`, `git add`, `git commit`, `git push`, `git checkout`, `git reset`, `git rev-parse`, nothing. Not "just to check", not "harmless read-only", none.
+- `wf_stage_complete` needs a SHA. Get it from the role subagent's report (each role subagent runs `git rev-parse HEAD` itself, per its own skill) — never run it yourself.
+- If no git repo exists yet and you need one, STOP and ask the user to run `git init` (and commit) themselves, or explicitly approve you doing it. Do not default to running it silently as a bootstrap convenience.
+- Only proceed with any git operation when the user has explicitly approved that exact operation in this session.
 
 ## Bootstrap
 

@@ -18,14 +18,14 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
 1. Read inputs: source code, `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`.
 2. **Read `.workflow/context.md` if it exists.** Use file summaries to understand existing code structure before reviewing changes.
 3. Diff uncommitted changes (`git status`, `git diff`). Map every change to a task ID.
-4. **If you find patterns or file details not yet in context.md**, append them — helps QA and Documenter.
+4. **If you find patterns or file details not yet in context.md**, append them — helps QA and Documenter. Include `path:startLine-endLine` for every specific finding, not just the filename.
 3. Write `review.md`:
 
    ```markdown
    # review
 
    ## findings
-   - F1 [blocker|major|minor] path:line — <issue>. Task: T<n>. Defect-key: <stable-slug>.
+   - F1 [blocker|major|minor] path:startLine-endLine — <issue>. Task: T<n>. Defect-key: <stable-slug>.
 
    ## unresolved from prior review
    - <ids or "none">
