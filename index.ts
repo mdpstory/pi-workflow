@@ -34,7 +34,7 @@ type Stage = (typeof STAGES)[number];
 
 const ARTIFACT_FOR_STAGE: Record<Stage, string[]> = {
 	planning: ["plan.md", "tasks.md"],
-	research: ["research.md"],
+	research: ["research.md", "context.md"],
 	"task-breakdown": ["tasks.md"], // director may edit
 	architecture: ["architecture.md"],
 	implementation: [], // source code, no md gate
@@ -59,13 +59,13 @@ const ROLE_FOR_STAGE: Record<Stage, string> = {
 // Which paths each role may write/edit. Empty = source code allowed, artifacts denied.
 const ROLE_ALLOW: Record<string, RegExp[]> = {
 	director: [/^\.workflow\//, /^progress\.md$/],
-	planner: [/^\.workflow\/artifacts\/plan\.md$/, /^\.workflow\/artifacts\/tasks\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	planner: [/^\.workflow\/artifacts\/plan\.md$/, /^\.workflow\/artifacts\/tasks\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
 	scout: [/^\.workflow\/artifacts\/research\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
 	architect: [/^\.workflow\/artifacts\/architecture\.md$/, /^\.workflow\/artifacts\/decisions\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	engineer: [/^\.workflow\/artifacts\/clarifications\.md$/], // + source (default allow below)
-	reviewer: [/^\.workflow\/artifacts\/review\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
-	qa: [/^\.workflow\/artifacts\/test-report\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
-	documenter: [/^\.workflow\/artifacts\/changelog\.md$/, /^docs\//, /^README\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	engineer: [/^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/], // + source (default allow below)
+	reviewer: [/^\.workflow\/artifacts\/review\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
+	qa: [/^\.workflow\/artifacts\/test-report\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
+	documenter: [/^\.workflow\/artifacts\/changelog\.md$/, /^\.workflow\/artifacts\/context\.md$/, /^docs\//, /^README\.md$/, /^\.workflow\/artifacts\/clarifications\.md$/],
 };
 
 // Artifact md files. Anything not in this set is treated as "source" and allowed for engineer.

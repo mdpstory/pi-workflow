@@ -18,6 +18,7 @@ You write tests and `test-report.md` only. Do NOT edit production source, even t
 1. Read `tasks.md`. Enumerate every acceptance criterion → AC-id.
 2. **Read `.workflow/context.md` if it exists.** Use file summaries to understand existing code structure before writing tests.
 3. Run existing test suite. Capture output.
+4. **If you discover test-relevant details** (mock patterns, test helpers, fixture locations), append to `.workflow/context.md` — helps Documenter and future runs.
 3. For each AC without a covering test, write one.
 4. Rerun full suite.
 5. Write `.workflow/artifacts/test-report.md`:

@@ -19,7 +19,8 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
 2. **Read `.workflow/context.md` if it exists.** Use file summaries from Scout/Architect to understand existing code without re-reading. Only read source files NOT listed in the "files explored" table.
 3. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
 4. Implement task by task, in the order `tasks.md` gives.
-3. Implement all tasks without committing.
+5. Implement all tasks without committing.
+6. **If you discover important details about existing files** (e.g. edge cases, gotchas, undocumented behavior), append them to `.workflow/context.md` so Reviewer/QA benefit.
 4. When all tasks in scope done, run `git rev-parse HEAD` to get current SHA. Notify Director `{stage:"implementation", sha:"<sha>"}` and stop.
 
 ## Rules

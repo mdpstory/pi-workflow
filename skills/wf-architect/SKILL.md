@@ -19,7 +19,8 @@ You write design docs only. Do NOT write or edit source code (not even a snippet
 2. **Read `.workflow/context.md` if it exists.** This contains file summaries from Scout — use them instead of re-reading source files. Only read source files that are NOT listed in the "files explored" table.
 3. If inputs missing or contradictory → `wf_clr_open stage=architecture …` and stop.
 4. Write `.workflow/artifacts/architecture.md`: components, interfaces (signatures), data flow, key trade-offs mapped to task IDs.
-3. Append each non-obvious choice to `.workflow/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
+5. Append each non-obvious choice to `.workflow/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
+6. **If you read any new source files not in context.md, append them** to `.workflow/context.md` under `## files explored` so downstream agents (Engineer, Reviewer) benefit.
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 5. Notify Director with `{stage:"architecture", artifact:".workflow/artifacts/architecture.md", sha}`.
 6. Stop.
