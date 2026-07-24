@@ -91,6 +91,34 @@ Planning and Research run sequentially in order (`planning` then `research`).
 
 Director synthesis, no peer. Reconcile `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md` + `.workflow/$PI_WORKFLOW_ID/artifacts/research.md` into `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`. Log every edit in `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`. Then `wf_stage_complete task-breakdown <sha>`.
 
+
+## Implementation (Parallel Engineers)
+
+During `implementation` stage, Director can dispatch **parallel Engineer subagents** for independent tasks:
+
+1. `wf_stage_start implementation`.
+2. **Context Injection & Task Graph Scheduling**:
+   - Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` and `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`.
+   - Identify all tasks with 0 pending dependencies (e.g. `T1` and `T2` independent).
+3. **Dispatch Parallel Engineers**:
+   - For each ready independent task, spawn a dedicated Engineer subagent (`agent: "engineer"`):
+     ```ts
+     subagent({
+       agent: "engineer",
+       task: "PI_WORKFLOW_ROLE=engineer. Implement task T1 per tasks.md & architecture.md.\n"
+           + "Read .workflow/" + PI_WORKFLOW_ID + "/artifacts/context.md first.\n"
+           + "Peer engineer working on T2 in parallel. Use intercom to communicate with peers if needed."
+     })
+     ```
+   - Alternatively, dispatch multiple engineer tasks in a single `subagent({ tasks: [...] })` call.
+4. **Intercom Alignment**:
+   - Parallel Engineers use `intercom` to coordinate shared signatures, exports, and module boundaries directly.
+5. **Collection & Downstream Unlocking**:
+   - Await reports from parallel Engineers.
+   - Mark completed tasks done and unlock dependent downstream tasks (e.g. `T3` dependent on `T1`).
+   - Repeat until all tasks in `tasks.md` are complete.
+6. `wf_stage_complete implementation <sha>`.
+
 ## Transition checklist (extension does most)
 
 `wf_stage_complete` checks: artifact non-stub, no OPEN CLR ≤ current stage, retry ≤ 3, valid SHA. If BLOCKED, fix and rerun. Never bypass.
