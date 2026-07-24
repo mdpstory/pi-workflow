@@ -526,18 +526,21 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
-	// The 50-call ceiling always applies. The role allowlist + CLR gate on write/edit
+	// The 50-call ceiling only applies to dispatched subagents (workflowActive()).
+	// The role allowlist + CLR gate on write/edit
 	// only activate once a workflow is actually in play — see workflowActive() — so
 	// merely having this extension installed doesn't default every session to
 	// "director" and block ordinary source edits nobody asked to have gated.
 	pi.on("tool_call", async (event, _ctx) => {
 		const r0 = role();
 
-		toolCalls += 1;
+		// Ceiling only applies to dispatched subagents (PI_WORKFLOW_ROLE explicitly
+		// set) — never to the top-level director/main session. See workflowActive().
+		if (workflowActive()) toolCalls += 1;
 
 		// 50-tool ceiling. Above cap, only allow write/edit so the agent can
 		// mark its artifact `DRAFT — incomplete, split required` and stop.
-		if (toolCalls > TOOL_CAP) {
+		if (workflowActive() && toolCalls > TOOL_CAP) {
 			if (event.toolName !== "write" && event.toolName !== "edit") {
 				return {
 					block: true,
