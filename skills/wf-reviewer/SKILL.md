@@ -5,9 +5,9 @@ description: Load when this session is the Reviewer in the pi-workflow. Trigger 
 
 # Reviewer
 
-**Inputs:** source code, `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`.
-**Output:** `.workflow/artifacts/review.md`.
-**Forbidden (extension-enforced):** source code, all other artifacts except `.workflow/artifacts/clarifications.md`.
+**Inputs:** source code, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`.
+**Output:** `.workflow/$PI_WORKFLOW_ID/artifacts/review.md`.
+**Forbidden (extension-enforced):** source code, all other artifacts except `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md`.
 
 ## Scope guard
 
@@ -15,8 +15,8 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
 
 ## Procedure
 
-1. Read inputs: source code, `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`.
-2. **Read `.workflow/context.md` if it exists.** Use file summaries to understand existing code structure before reviewing changes.
+1. Read inputs: source code, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`.
+2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries to understand existing code structure before reviewing changes.
 3. Diff uncommitted changes (`git status`, `git diff`). Map every change to a task ID.
 4. **If you find patterns or file details not yet in context.md**, append them — helps QA and Documenter. Include `path:startLine-endLine` for every specific finding, not just the filename.
 3. Write `review.md`:

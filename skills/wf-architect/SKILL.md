@@ -5,8 +5,8 @@ description: Load when this session is the Architect in the pi-workflow. Trigger
 
 # Architect
 
-**Inputs:** `.workflow/artifacts/plan.md`, `.workflow/artifacts/tasks.md`, `.workflow/artifacts/research.md`. Read all in full.
-**Outputs:** `.workflow/artifacts/architecture.md`, appends to `.workflow/artifacts/decisions.md` (design section).
+**Inputs:** `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`. Read all in full.
+**Outputs:** `.workflow/shared/artifacts/architecture.md`, appends to `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (design section).
 **Forbidden (extension-enforced):** source, plan, tasks, research, review, test-report, changelog, progress.
 
 ## Scope guard
@@ -15,14 +15,14 @@ You write design docs only. Do NOT write or edit source code (not even a snippet
 
 ## Procedure
 
-1. Read inputs: `.workflow/artifacts/plan.md`, `.workflow/artifacts/tasks.md`, `.workflow/artifacts/research.md`.
-2. **Read `.workflow/context.md` if it exists.** This contains file summaries from Scout — use them instead of re-reading source files. Only read source files that are NOT listed in the "files explored" table.
+1. Read inputs: `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`.
+2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** This contains file summaries from Scout — use them instead of re-reading source files. Only read source files that are NOT listed in the "files explored" table.
 3. If inputs missing or contradictory → `wf_clr_open stage=architecture …` and stop.
-4. Write `.workflow/artifacts/architecture.md`: components, interfaces (signatures), data flow, key trade-offs mapped to task IDs.
-5. Append each non-obvious choice to `.workflow/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
-6. **If you read any new source files not in context.md, append them** to `.workflow/context.md` under `## files explored` so downstream agents (Engineer, Reviewer) benefit. Include `path:startLine-endLine` for every key export/symbol cited, not just the filename.
+4. Write `.workflow/shared/artifacts/architecture.md`: components, interfaces (signatures), data flow, key trade-offs mapped to task IDs.
+5. Append each non-obvious choice to `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
+6. **If you read any new source files not in context.md, append them** to `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` under `## files explored` so downstream agents (Engineer, Reviewer) benefit. Include `path:startLine-endLine` for every key export/symbol cited, not just the filename.
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
-5. Notify Director with `{stage:"architecture", artifact:".workflow/artifacts/architecture.md", sha}`.
+5. Notify Director with `{stage:"architecture", artifact:".workflow/shared/artifacts/architecture.md", sha}`.
 6. Stop.
 
 ## Rules

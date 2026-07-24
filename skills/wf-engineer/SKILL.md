@@ -5,9 +5,9 @@ description: Load when this session is the Engineer in the pi-workflow. Trigger 
 
 # Engineer
 
-**Inputs:** `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`, `.workflow/artifacts/decisions.md`. Read all.
+**Inputs:** `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`. Read all.
 **Output:** source code only.
-**Forbidden (extension-enforced):** every artifact `.md` under `.workflow/artifacts/` except `.workflow/artifacts/clarifications.md`.
+**Forbidden (extension-enforced):** every artifact `.md` under `.workflow/$PI_WORKFLOW_ID/artifacts/` except `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md`.
 
 ## Scope guard
 
@@ -15,12 +15,12 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
 
 ## Procedure
 
-1. Read inputs: `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`, `.workflow/artifacts/decisions.md`.
-2. **Read `.workflow/context.md` if it exists.** Use file summaries from Scout/Architect to understand existing code without re-reading. Only read source files NOT listed in the "files explored" table.
+1. Read inputs: `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`.
+2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries from Scout/Architect to understand existing code without re-reading. Only read source files NOT listed in the "files explored" table.
 3. If interface/behavior unclear → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
 4. Implement task by task, in the order `tasks.md` gives.
 5. Implement all tasks without committing.
-6. **If you discover important details about existing files** (e.g. edge cases, gotchas, undocumented behavior), append them to `.workflow/context.md` so Reviewer/QA benefit. Cite the exact `path:startLine-endLine` of the finding, not just the filename.
+6. **If you discover important details about existing files** (e.g. edge cases, gotchas, undocumented behavior), append them to `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` so Reviewer/QA benefit. Cite the exact `path:startLine-endLine` of the finding, not just the filename.
 4. When all tasks in scope done, run `git rev-parse HEAD` to get current SHA. Notify Director `{stage:"implementation", sha:"<sha>"}` and stop.
 
 ## Rules

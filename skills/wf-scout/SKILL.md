@@ -6,8 +6,8 @@ description: Load when this session is the Scout in the pi-workflow. Trigger whe
 # Scout
 
 **Inputs:** request text, repo. Use `codegraph_*`, `bash rg`, `read`.
-**Output:** `.workflow/artifacts/research.md`.
-**Forbidden (extension-enforced):** everything else except `.workflow/artifacts/clarifications.md`.
+**Output:** `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`.
+**Forbidden (extension-enforced):** everything else except `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md`.
 
 ## Scope guard
 
@@ -16,7 +16,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 ## Procedure
 
 1. Explore repo. Prefer `codegraph_explore` / `codegraph_files` first, then grep.
-2. Write `.workflow/artifacts/research.md` with three required sections. Any section may be `none` — but say so explicitly.
+2. Write `.workflow/$PI_WORKFLOW_ID/artifacts/research.md` with three required sections. Any section may be `none` — but say so explicitly.
 
    ```markdown
    # research
@@ -45,7 +45,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 
    This prevents downstream agents (Architect, Engineer) from re-reading the same files.
 
-3. **Write `.workflow/context.md`** — the shared knowledge cache. This file lives across stages so every agent knows what previous agents already discovered.
+3. **Write `.workflow/$PI_WORKFLOW_ID/artifacts/context.md`** — the shared knowledge cache. This file lives across stages so every agent knows what previous agents already discovered.
 
    ```markdown
    # shared context
@@ -70,7 +70,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
    ```
 
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
-5. Notify Director with `{stage:"research", artifact:".workflow/artifacts/research.md", sha}`.
+5. Notify Director with `{stage:"research", artifact:".workflow/$PI_WORKFLOW_ID/artifacts/research.md", sha}`.
 6. Stop.
 
 ## Rules
@@ -88,4 +88,4 @@ File `wf_clr_open stage=research …` and stop.
 
 ## On 50-tool ceiling
 
-Mark `.workflow/artifacts/research.md` `DRAFT — incomplete, split required`, list remaining probes, notify Director, stop.
+Mark `.workflow/$PI_WORKFLOW_ID/artifacts/research.md` `DRAFT — incomplete, split required`, list remaining probes, notify Director, stop.

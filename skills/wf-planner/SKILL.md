@@ -5,9 +5,9 @@ description: Load when this session is the Planner in the pi-workflow. Trigger w
 
 # Planner
 
-**Inputs:** the request text from Director. Any prior `.workflow/artifacts/plan.md` / `.workflow/artifacts/tasks.md`.
-**Outputs:** `.workflow/artifacts/plan.md`, `.workflow/artifacts/tasks.md`.
-**Forbidden (extension-enforced):** everything else except `.workflow/artifacts/clarifications.md`.
+**Inputs:** the request text from Director. Any prior `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md` / `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`.
+**Outputs:** `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`.
+**Forbidden (extension-enforced):** everything else except `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md`.
 
 ## Scope guard
 
@@ -16,10 +16,10 @@ You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source 
 ## Procedure
 
 1. Read the request. If ambiguous → `wf_clr_open stage=planning question="..."` and stop.
-2. Write `.workflow/artifacts/plan.md`: goal, scope, non-goals, milestones, complexity estimate. Terse. Lists over prose.
-3. Write `.workflow/artifacts/tasks.md`: numbered tasks with IDs (`T1`, `T2`, …), acceptance criteria per task, deps.
+2. Write `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`: goal, scope, non-goals, milestones, complexity estimate. Terse. Lists over prose.
+3. Write `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`: numbered tasks with IDs (`T1`, `T2`, …), acceptance criteria per task, deps.
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
-5. Notify Director via intercom: `{stage:"planning", artifacts:[".workflow/artifacts/plan.md",".workflow/artifacts/tasks.md"], sha:"<sha>"}`.
+5. Notify Director via intercom: `{stage:"planning", artifacts:[".workflow/$PI_WORKFLOW_ID/artifacts/plan.md",".workflow/$PI_WORKFLOW_ID/artifacts/tasks.md"], sha:"<sha>"}`.
 6. Stop. Do not proceed.
 
 ## Rules
@@ -35,4 +35,4 @@ File and stop. Do not draft partial `plan.md`.
 
 ## On 50-tool ceiling
 
-Mark `.workflow/artifacts/plan.md` `DRAFT — incomplete, split required`, list what's left, notify Director, stop.
+Mark `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md` `DRAFT — incomplete, split required`, list what's left, notify Director, stop.

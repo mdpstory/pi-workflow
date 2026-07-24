@@ -7,9 +7,9 @@ description: Load when this session is the Director in the pi-workflow (ai-workf
 
 Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout, Architect, Engineer, Reviewer, QA) to separate subagents. Do NOT attempt to handle these roles yourself for simplicity, as you will be blocked by the extension.
 
-**Reads:** every artifact under `.workflow/artifacts/`. **Writes:** `progress.md`, `.workflow/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/artifacts/tasks.md` (task-breakdown reconciliation only), `.workflow/artifacts/clarifications.md` (resolutions).
+**Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/`. **Writes:** `progress.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md` (task-breakdown reconciliation only), `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions).
 
-**Forbidden (extension-enforced):** `.workflow/artifacts/plan.md`, `.workflow/artifacts/research.md`, `.workflow/artifacts/architecture.md`, `.workflow/artifacts/review.md`, `.workflow/artifacts/test-report.md`, `.workflow/artifacts/changelog.md`, source code.
+**Forbidden (extension-enforced):** `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/research.md`, `.workflow/shared/artifacts/architecture.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/review.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/test-report.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md`, source code.
 
 ## Scope guard
 
@@ -34,11 +34,11 @@ Dispatch each stage to its dedicated registered subagent (`agent: "planner"`, `a
 
 ### Context passing (CRITICAL)
 
-**Before spawning ANY agent after Scout completes**, read `.workflow/context.md` and inject its contents into the agent's task prompt. This prevents re-reading files Scout already explored.
+**Before spawning ANY agent after Scout completes**, read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` and inject its contents into the agent's task prompt. This prevents re-reading files Scout already explored.
 
 Pattern:
 ```
-const context = fs.readFileSync(".workflow/context.md", "utf8");
+const context = fs.readFileSync(`.workflow/${PI_WORKFLOW_ID}/artifacts/context.md`, "utf8");
 subagent({
   agent: "architect",
   task: "PI_WORKFLOW_ROLE=architect. You are the Architect in this pi-workflow run. "
@@ -47,7 +47,7 @@ subagent({
       + "\n\n## Context from prior agents\n" + context + "\n\n" 
       + "Use the context above. DO NOT re-read files already listed in 'files explored' — the summaries contain what you need. "
       + "Only read source files NOT listed in context. "
-      + "Write .workflow/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
+      + "Write .workflow/shared/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
 })
 ```
 
@@ -60,7 +60,7 @@ subagent({
   task: "PI_WORKFLOW_ROLE=architect. You are the Architect in this pi-workflow run. "
       + "Load skill wf-architect. "
       + "Request: <the user's request/context>. "
-      + "Write .workflow/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
+      + "Write .workflow/shared/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
 })
 ```
 
@@ -89,7 +89,7 @@ Both then work independently. Wait for both to notify back with their SHA before
 
 ## Task Breakdown
 
-Director synthesis, no peer. Reconcile `.workflow/artifacts/plan.md` + `.workflow/artifacts/research.md` into `.workflow/artifacts/tasks.md`. Log every edit in `.workflow/artifacts/decisions.md`. Then `wf_stage_complete task-breakdown <sha>`.
+Director synthesis, no peer. Reconcile `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md` + `.workflow/$PI_WORKFLOW_ID/artifacts/research.md` into `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`. Log every edit in `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`. Then `wf_stage_complete task-breakdown <sha>`.
 
 ## Transition checklist (extension does most)
 

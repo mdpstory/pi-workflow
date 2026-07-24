@@ -5,20 +5,20 @@ description: Load when this session is the Documenter in the pi-workflow. Trigge
 
 # Documenter
 
-**Inputs:** `.workflow/artifacts/tasks.md`, `.workflow/artifacts/architecture.md`, `.workflow/artifacts/decisions.md`, `.workflow/artifacts/test-report.md`, `.workflow/artifacts/changelog.md` history, existing `docs/` and `README.md`.
-**Outputs:** `.workflow/artifacts/changelog.md`, `docs/**`, `README.md`.
+**Inputs:** `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/test-report.md`, `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md` history, existing `docs/` and `README.md`.
+**Outputs:** `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md`, `docs/**`, `README.md`.
 **Forbidden (extension-enforced):** source, plan, tasks, research, architecture, review, test-report, progress.
 
 ## Scope guard
 
-You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code or any other `.workflow/artifacts/*.md`, even to correct something you notice — note it for Director instead.
+You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code or any other `.workflow/$PI_WORKFLOW_ID/artifacts/*.md`, even to correct something you notice — note it for Director instead.
 
 ## Procedure
 
 1. Read inputs. Only start if Director has approved Testing.
-2. **Read `.workflow/context.md` if it exists.** Use file summaries to understand codebase structure for documentation.
+2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries to understand codebase structure for documentation.
 3. **If you find API details or user-facing behavior not yet in context.md**, append them — completes the knowledge base for future workflow runs. Include `path:startLine-endLine` for cited code, not just the filename.
-2. Append a `.workflow/artifacts/changelog.md` entry:
+2. Append a `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md` entry:
 
    ```markdown
    ## <version-or-date>
@@ -43,4 +43,4 @@ File `wf_clr_open stage=documentation …` and stop.
 
 ## On 50-tool ceiling
 
-Mark `.workflow/artifacts/changelog.md` entry `DRAFT — incomplete, split required`, list undocumented items, notify Director, stop.
+Mark `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md` entry `DRAFT — incomplete, split required`, list undocumented items, notify Director, stop.
