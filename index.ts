@@ -6,13 +6,18 @@
  *   2. Role-based path allowlist that hard-blocks write/edit
  *   3. CLR gate that hard-blocks write/edit while any OPEN CLR names current or upstream stage
  *
- * Role is read from env PI_WORKFLOW_ROLE. Two independent defaults:
+ * Role is read from env PI_WORKFLOW_ROLE (per-process identity — can't be a shared config
+ * file since multiple roles run concurrently as separate subagent processes). Two
+ * independent defaults:
  *   - Tool-body permission checks (e.g. "director only") default to "director" when unset —
  *     see role().
  *   - The write/edit gate in the tool_call hook does NOT default at all: when
  *     PI_WORKFLOW_ROLE is unset, roleOrNull() is null and the hook exits immediately,
  *     meaning writes are completely ungated (not even director-restricted). Only set
  *     PI_WORKFLOW_ROLE for sessions that should actually be gated.
+ * skipStages is read from a real config file — see "role" key note above vs. skipStages
+ * below, which IS a static per-repo setting and lives in .pi/pi-workflow.json /
+ * ~/.pi/agent/pi-workflow.json.
  * State: .workflow/<id>/state.json, .workflow/<id>/clr-index.json
  * Artifacts (per-workflow, .workflow/<id>/artifacts/): plan.md, tasks.md, research.md,
  *            decisions.md, clarifications.md, progress.md, review.md, test-report.md, changelog.md
@@ -200,6 +205,21 @@ function clrIndexPath(): string {
 function lockPath(): string {
 	return path.join(wfDir(), "director.lock");
 }
+// ---- settings.json config (project overrides global) ----
+// Static per-repo settings only (NOT per-process identity like role, which stays env-based
+// so concurrent director/planner/engineer subagents don't collapse onto one shared value).
+// Project: <repo>/.pi/pi-workflow.json   Global: ~/.pi/agent/pi-workflow.json
+// Shape: { "skipStages": ["review", "testing"] }
+interface WfConfig {
+	skipStages?: string[];
+}
+function loadConfig(): WfConfig {
+	const globalPath = path.join(os.homedir(), ".pi", "agent", "pi-workflow.json");
+	const projectPath = path.join(repoRoot(), ".pi", "pi-workflow.json");
+	const g = readJson<WfConfig>(globalPath, {});
+	const p = readJson<WfConfig>(projectPath, {});
+	return { skipStages: p.skipStages ?? g.skipStages };
+}
 // Returns null when PI_WORKFLOW_ROLE is unset — meaning this session is not
 // participating in the workflow at all, so no role gating should apply.
 // Only an explicit PI_WORKFLOW_ROLE=director makes a session the director.
@@ -287,12 +307,11 @@ function stageIndex(s: string): number {
 	return STAGES.indexOf(s as Stage);
 }
 
-// Stages to auto-skip by default, via PI_WORKFLOW_SKIP_STAGES="review,testing,documentation".
-// wf_stage_start chains through them automatically; wf_stage_complete waives their
-// artifact requirement too.
+// Stages to auto-skip by default, via skipStages in .pi/pi-workflow.json (or
+// ~/.pi/agent/pi-workflow.json). wf_stage_start chains through them automatically;
+// wf_stage_complete waives their artifact requirement too.
 function skipStagesSet(): Set<Stage> {
-	const raw = process.env.PI_WORKFLOW_SKIP_STAGES ?? "";
-	const names = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+	const names = (loadConfig().skipStages ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
 	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
 }
 
@@ -564,7 +583,7 @@ export default function (pi: ExtensionAPI) {
 			if (skippedChain.length) {
 				fs.appendFileSync(
 					path.join(artifactsDir(), "decisions.md"),
-					`\n## auto-skip (PI_WORKFLOW_SKIP_STAGES)\n- Skipped: ${skippedChain.join(", ")}\n`,
+					`\n## auto-skip (skipStages config)\n- Skipped: ${skippedChain.join(", ")}\n`,
 				);
 			}
 			acquireOrCheckLock(); // refresh heartbeat; also self-reclaims a stale lock
@@ -639,7 +658,7 @@ export default function (pi: ExtensionAPI) {
 
 			const errors: string[] = [];
 
-			// 1. artifact exists — waived for stages configured via PI_WORKFLOW_SKIP_STAGES
+			// 1. artifact exists — waived for stages configured via skipStages config
 			const autoSkip = skipStagesSet().has(stage);
 			for (const art of autoSkip ? [] : ARTIFACT_FOR_STAGE[stage]) {
 				const abs = artifactPath(art);

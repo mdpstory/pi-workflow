@@ -32,11 +32,14 @@ Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`).
 
 ### Skipping stages by default
 
-Set `PI_WORKFLOW_SKIP_STAGES` to a comma-separated list of stage names to
-auto-skip them every run, e.g. to skip review/testing entirely:
+List stage names in a `skipStages` array in a JSON config file to auto-skip
+them every run — no env var needed. Project config wins over global:
 
-```bash
-PI_WORKFLOW_ROLE=director PI_WORKFLOW_SKIP_STAGES=review,testing pi ...
+```json
+// .pi/pi-workflow.json  (project, git-shareable)  — or ~/.pi/agent/pi-workflow.json (global)
+{
+  "skipStages": ["review", "testing"]
+}
 ```
 
 `wf_stage_start` auto-marks configured stages `done` and fast-forwards to the
@@ -45,6 +48,10 @@ next non-skipped stage (chaining through several in a row if needed).
 in case they're completed explicitly. This is separate from the per-call
 `skip` param on `wf_stage_complete`, which is a one-off trivial-task escape
 hatch logged to `decisions.md`.
+
+(`PI_WORKFLOW_ROLE` and `PI_WORKFLOW_ID` stay env vars — they're per-process
+identity, not static settings: multiple roles run concurrently as separate
+subagent processes and can't share one config value.)
 
 ### Running multiple workflows in the same repo
 
