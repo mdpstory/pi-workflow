@@ -12,6 +12,7 @@
  *            clarifications.md, progress.md, review.md, test-report.md, changelog.md
  */
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -470,10 +471,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_stage_complete",
 		label: "wf_stage_complete",
-		description: "Run transition checklist for <stage>. Director only. Requires git SHA (git rev-parse HEAD). Blocks if OPEN CLR names this or upstream stage, or required artifact absent.",
+		description: "Run transition checklist for <stage>. Director only. Requires a change marker (git SHA from `git rev-parse HEAD` if the project is a git repo; if not, omit `sha` and one is auto-generated). Blocks if OPEN CLR names this or upstream stage, or required artifact absent.",
 		parameters: Type.Object({
 			stage: StringEnum([...STAGES]),
-			sha: Type.String({ description: "git SHA from git rev-parse HEAD" }),
+			sha: Type.Optional(Type.String({ description: "git SHA from `git rev-parse HEAD`. Optional — if the project has no git repo, omit this and a placeholder marker is generated automatically." })),
 			skip: Type.Optional(Type.String({ description: "trivial-task escape: skip this and remaining pre-implementation stages, reason logged to decisions.md" })),
 		}),
 		async execute(_id, params) {
@@ -481,6 +482,7 @@ export default function (pi: ExtensionAPI) {
 			const state = loadState();
 			const clr = loadClr();
 			const stage = params.stage as Stage;
+			const sha = params.sha ?? crypto.randomBytes(4).toString("hex");
 
 			// --- trivial-task escape hatch ---
 			if (params.skip) {
@@ -489,23 +491,23 @@ export default function (pi: ExtensionAPI) {
 				if (startIdx === -1 || startIdx >= implIdx) {
 					return deny("skip only allowed on pre-implementation stages");
 				}
-				if (!/^[0-9a-f]{7,40}$/i.test(params.sha)) return deny(`bad sha: ${params.sha}`);
+				if (!/^[0-9a-f]{7,40}$/i.test(sha)) return deny(`bad sha: ${sha}`);
 				const skipped: string[] = [];
 				for (let i = startIdx; i < implIdx; i++) {
 					const s = STAGES[i];
 					state.stages[s].status = "done";
-					state.stages[s].sha = params.sha;
+					state.stages[s].sha = sha;
 					skipped.push(s);
 				}
 				state.current = "implementation";
 				saveState(state);
 				fs.appendFileSync(
 					path.join(artifactsDir(), "decisions.md"),
-					`\n## trivial-task skip @ ${params.sha.slice(0, 7)}\n- Skipped: ${skipped.join(", ")}\n- Reason: ${params.skip}\n`,
+					`\n## trivial-task skip @ ${sha.slice(0, 7)}\n- Skipped: ${skipped.join(", ")}\n- Reason: ${params.skip}\n`,
 				);
 				return {
 					content: [{ type: "text", text: `SKIPPED ${skipped.join(", ")} → implementation` }],
-					details: { ok: true, decision: "SKIPPED", skipped, sha: params.sha },
+					details: { ok: true, decision: "SKIPPED", skipped, sha },
 				};
 			}
 
@@ -528,7 +530,7 @@ export default function (pi: ExtensionAPI) {
 			if (retries > 3) errors.push(`retry count ${retries} exceeds cap`);
 
 			// 4. SHA sanity
-			if (!/^[0-9a-f]{7,40}$/i.test(params.sha)) errors.push(`bad sha: ${params.sha}`);
+			if (!/^[0-9a-f]{7,40}$/i.test(sha)) errors.push(`bad sha: ${sha}`);
 
 			if (errors.length) {
 				return {
@@ -538,12 +540,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			state.stages[stage].status = "done";
-			state.stages[stage].sha = params.sha;
+			state.stages[stage].sha = sha;
 			state.current = nextStage(stage);
 			saveState(state);
 			return {
-				content: [{ type: "text", text: `APPROVED ${stage} @ ${params.sha.slice(0, 7)}` }],
-				details: { ok: true, decision: "APPROVED", stage, sha: params.sha },
+				content: [{ type: "text", text: `APPROVED ${stage} @ ${sha.slice(0, 7)}` }],
+				details: { ok: true, decision: "APPROVED", stage, sha },
 			};
 		},
 	});
