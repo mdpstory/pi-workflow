@@ -87,6 +87,15 @@ there; `wf_stage_complete architecture` checks it there; the Architect role
 (and Director) may write it regardless of `PI_WORKFLOW_ID`. This is
 intentional and not subject to the cross-namespace block above.
 
+**Architecture stage is never in `skipStages`** — unlike other stages it's
+auto-skipped conditionally instead: `wf_stage_complete architecture` stamps
+a `<!-- generated-at-sha: <sha> -->` marker on the first line of
+`architecture.md`, and the next `wf_stage_start architecture` runs a cheap
+`git diff --quiet <stamped> <HEAD>` (excluding `.workflow/` and
+`node_modules/`) to check whether anything actually changed since that sha.
+No diff → auto-marked done without invoking the Architect. Diff found (or
+no git repo, or no stamp yet) → Architect runs normally.
+
 ## Testing
 
 ```bash

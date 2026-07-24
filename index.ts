@@ -26,6 +26,7 @@
  *            architecture.md
  */
 
+import { execFileSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -315,6 +316,57 @@ function skipStagesSet(): Set<Stage> {
 	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
 }
 
+// ---- architecture.md freshness (git-diff based, no full re-scan) ----
+// architecture.md is stamped with a `<!-- generated-at-sha: <sha> -->` marker on its
+// first line whenever the Architect writes it. Before making the Architect regenerate
+// it, we check whether the tree actually changed since that sha via `git diff --quiet`
+// (excluding .workflow/ and node_modules/) — cheap, no need to re-read every file.
+const ARCH_STAMP_RE = /^<!--\s*generated-at-sha:\s*([0-9a-f]{7,40})\s*-->/i;
+
+function currentGitSha(): string | null {
+	try {
+		return execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot(), encoding: "utf8" }).trim();
+	} catch {
+		return null;
+	}
+}
+function readArchStamp(): string | null {
+	try {
+		const text = fs.readFileSync(artifactPath("architecture.md"), "utf8");
+		const m = ARCH_STAMP_RE.exec(text);
+		return m ? m[1] : null;
+	} catch {
+		return null;
+	}
+}
+/** True when architecture.md exists, is stamped, and the repo tree (excluding
+ *  .workflow/ and node_modules/) is unchanged since that stamped sha. */
+function isArchitectureFresh(): { fresh: boolean; sha: string | null } {
+	const stamped = readArchStamp();
+	const head = currentGitSha();
+	if (!stamped || !head) return { fresh: false, sha: head };
+	if (stamped === head) return { fresh: true, sha: head };
+	try {
+		execFileSync("git", ["diff", "--quiet", stamped, head, "--", ".", ":!.workflow", ":!node_modules"], { cwd: repoRoot() });
+		return { fresh: true, sha: head }; // exit 0 → no diff → still fresh
+	} catch {
+		return { fresh: false, sha: head }; // non-zero exit → diff found, or git error
+	}
+}
+/** Rewrite/insert the `generated-at-sha` stamp as the first line of architecture.md. */
+function stampArchitecture(sha: string): void {
+	const p = artifactPath("architecture.md");
+	let text: string;
+	try {
+		text = fs.readFileSync(p, "utf8");
+	} catch {
+		return;
+	}
+	const stampLine = `<!-- generated-at-sha: ${sha} -->`;
+	text = ARCH_STAMP_RE.test(text) ? text.replace(ARCH_STAMP_RE, stampLine) : `${stampLine}\n${text}`;
+	fs.writeFileSync(p, text);
+}
+
 // ---- progress.md renderer ----
 
 const SYMBOL: Record<string, string> = {
@@ -566,12 +618,30 @@ export default function (pi: ExtensionAPI) {
 			fs.mkdirSync(artifactsDir(), { recursive: true }); // guard: ensure dir exists even if wf_init wasn't called first
 			const skip = skipStagesSet();
 			const skippedChain: Stage[] = [];
+			const freshChain: Stage[] = [];
 			let cur: Stage | null = target;
-			while (cur && skip.has(cur)) {
-				state.stages[cur].status = "done";
-				state.stages[cur].sha = "auto-skip";
-				skippedChain.push(cur);
-				cur = nextStage(cur);
+			while (cur) {
+				if (skip.has(cur)) {
+					state.stages[cur].status = "done";
+					state.stages[cur].sha = "auto-skip";
+					skippedChain.push(cur);
+					cur = nextStage(cur);
+					continue;
+				}
+				// architecture is never blanket-skipped, but IS skipped when the repo tree
+				// hasn't changed since architecture.md was last stamped (git-diff check,
+				// no full re-scan needed).
+				if (cur === "architecture") {
+					const { fresh, sha: headSha } = isArchitectureFresh();
+					if (fresh && headSha) {
+						state.stages[cur].status = "done";
+						state.stages[cur].sha = headSha;
+						freshChain.push(cur);
+						cur = nextStage(cur);
+						continue;
+					}
+				}
+				break;
 			}
 			if (cur) {
 				state.current = cur;
@@ -586,20 +656,27 @@ export default function (pi: ExtensionAPI) {
 					`\n## auto-skip (skipStages config)\n- Skipped: ${skippedChain.join(", ")}\n`,
 				);
 			}
+			if (freshChain.length) {
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## auto-skip (architecture.md unchanged since last stamp)\n- Skipped: ${freshChain.join(", ")}\n`,
+				);
+			}
 			acquireOrCheckLock(); // refresh heartbeat; also self-reclaims a stale lock
 
 			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
 			resetToolCalls();
 
 			if (!cur) {
-				return ok(`stage(s) skipped: ${skippedChain.join(", ")}. Workflow reached end — no stage in-progress.`);
+				return ok(`stage(s) skipped: ${allSkipped.join(", ")}. Workflow reached end — no stage in-progress.`);
 			}
 
 			// Delegation guidance: tell solo directors to spawn a subagent
 			const delegateRole = ROLE_FOR_STAGE[cur];
 			const artifacts = ARTIFACT_FOR_STAGE[cur];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
-			const skippedNote = skippedChain.length ? ` (auto-skipped: ${skippedChain.join(", ")})` : "";
+			const allSkipped = [...skippedChain, ...freshChain];
+			const skippedNote = allSkipped.length ? ` (auto-skipped: ${allSkipped.join(", ")})` : "";
 			const hint = [
 				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
 				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole} PI_WORKFLOW_ID=${workflowId()}" and load skill "wf-${delegateRole}".`,
@@ -685,6 +762,10 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
+			if (stage === "architecture") {
+				const head = currentGitSha();
+				if (head) stampArchitecture(head); // record what tree state this architecture.md reflects
+			}
 			state.stages[stage].status = "done";
 			state.stages[stage].sha = sha;
 			state.current = nextStage(stage);
