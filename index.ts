@@ -237,6 +237,21 @@ function role(): string {
 	const v = process.env.PI_WORKFLOW_ROLE;
 	return v ? v.toLowerCase() : "director";
 }
+// Gating (role allowlist + CLR gate) only kicks in when a role was deliberately
+// assigned via PI_WORKFLOW_ROLE — i.e. an actual dispatched subagent (director spawns
+// these as `PI_WORKFLOW_ROLE=<role> ...`). The top-level director session itself never
+// sets this by hand (it's the default identity — see role()), so director's own
+// "don't touch source / architecture.md" rule is NOT hard-enforced here — it's a
+// convention-only discipline rule, same tier as director's other self-restrictions
+// already documented as convention-only in wf-director's SKILL.md (plan.md,
+// research.md, review.md, test-report.md, changelog.md). Deliberately NOT keyed off
+// state.json/wf_init: director calls wf_init as step 1 of nearly every task, so a
+// file-existence signal would make the hard gate active for virtually all of a
+// director's working life — defeating the point, since director is not an opt-in
+// identity here.
+function workflowActive(): boolean {
+	return process.env.PI_WORKFLOW_ROLE !== undefined;
+}
 function readJson<T>(p: string, fallback: T): T {
 	try {
 		return JSON.parse(fs.readFileSync(p, "utf8")) as T;
@@ -511,10 +526,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
-	// Always active once the extension is loaded — role() defaults to "director" when
-	// PI_WORKFLOW_ROLE is unset, and gating always applies (no ungated bypass). Director's
-	// own write scope is a narrow allowlist, so this is safe for casual/non-workflow use
-	// of a repo that happens to have this extension installed.
+	// The 50-call ceiling always applies. The role allowlist + CLR gate on write/edit
+	// only activate once a workflow is actually in play — see workflowActive() — so
+	// merely having this extension installed doesn't default every session to
+	// "director" and block ordinary source edits nobody asked to have gated.
 	pi.on("tool_call", async (event, _ctx) => {
 		const r0 = role();
 
@@ -535,6 +550,11 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
+
+		// No role explicitly assigned via PI_WORKFLOW_ROLE — this is the top-level
+		// director (or a casual, non-workflow session), not a dispatched subagent.
+		// Don't hard-gate; see workflowActive() for why.
+		if (!workflowActive()) return undefined;
 
 		const p = (event.input as { path?: string }).path;
 		if (!p) return undefined;

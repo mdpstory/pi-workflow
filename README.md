@@ -27,12 +27,15 @@ pi install -l git:github.com/mdpstory/pi-workflow
 - Stage sequencing (can't skip stages without an explicit trivial-task escape hatch).
 - 8 role SKILL.md files under `skills/wf-*`.
 
-Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`). The
-default applies consistently everywhere — both tool permission checks and the
-write/edit gate treat an unset `PI_WORKFLOW_ROLE` as `director`. Director's own
-write scope is a narrow allowlist (`decisions.md`, `tasks.md`,
-`clarifications.md`, plus its own `.workflow/<id>/` state files) — it does **not**
-get a blanket bypass, so this default is safe even for casual/non-workflow use
+Role is selected via the `PI_WORKFLOW_ROLE` env var (default `director`, used for
+tool-body permission checks like wf_init/wf_stage_start). The hard write/edit
+gate, however, only activates when `PI_WORKFLOW_ROLE` is set *explicitly* — i.e.
+for an actual dispatched subagent (`PI_WORKFLOW_ROLE=engineer ...`), never for
+the top-level director itself. The top-level director is not meant to set this
+env var by hand, so its own write restrictions (must not touch source,
+architecture.md, or artifacts outside `decisions.md`/`tasks.md`/
+`clarifications.md`) are convention-only, enforced by the wf-director skill's
+discipline rules, not by the extension. This keeps casual/non-workflow use
 of a repo that has the extension installed.
 
 ### Skipping stages by default
