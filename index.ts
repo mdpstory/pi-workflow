@@ -428,10 +428,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_stage_complete",
 		label: "wf_stage_complete",
-		description: "Run transition checklist for <stage>. Director only. Requires commit SHA. Blocks if OPEN CLR names this or upstream stage, or required artifact absent.",
+		description: "Run transition checklist for <stage>. Director only. Requires git SHA (git rev-parse HEAD). Blocks if OPEN CLR names this or upstream stage, or required artifact absent.",
 		parameters: Type.Object({
 			stage: StringEnum([...STAGES]),
-			sha: Type.String({ description: "commit SHA that produced the artifact" }),
+			sha: Type.String({ description: "git SHA from git rev-parse HEAD" }),
 			skip: Type.Optional(Type.String({ description: "trivial-task escape: skip this and remaining pre-implementation stages, reason logged to decisions.md" })),
 		}),
 		async execute(_id, params) {

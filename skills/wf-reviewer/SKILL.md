@@ -16,7 +16,7 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
 ## Procedure
 
 1. Read inputs.
-2. Diff since last review commit (`git log`, `git diff`). Map every change to a task ID.
+2. Diff uncommitted changes (`git status`, `git diff`). Map every change to a task ID.
 3. Write `review.md`:
 
    ```markdown

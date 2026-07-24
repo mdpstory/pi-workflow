@@ -32,7 +32,7 @@ subagent({
   task: "PI_WORKFLOW_ROLE=architect. You are the Architect in this pi-workflow run. "
       + "Load skill wf-architect. "
       + "Request: <the user's request/context>. "
-      + "Write .workflow/artifacts/architecture.md, commit, then report back stage/artifacts/sha."
+      + "Write .workflow/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
 })
 ```
 
@@ -41,7 +41,7 @@ subagent({
 ```
 wf_stage_start <stage>
   → spawn a NEW subagent (agent: <role>, task text carries PI_WORKFLOW_ROLE=<role> + skill name; do NOT recruit existing generic/idle sessions via intercom)
-  → wait for role's "artifact committed at <sha>" notify
+  → wait for role's notify with SHA
   → read artifact in full
   → wf_stage_complete <stage> <sha>
       APPROVED → wf_stage_start <next>
@@ -56,7 +56,7 @@ Both run concurrently. You MUST delegate these tasks to dedicated subagents (`ag
 2. Spawn a subagent (`agent: "scout"`, task text: `PI_WORKFLOW_ROLE=scout`) to act as Scout.
 
 
-Both then work independently. Wait for both to notify back with their commit SHA before `wf_stage_start task-breakdown`.
+Both then work independently. Wait for both to notify back with their SHA before `wf_stage_start task-breakdown`.
 
 
 ## Task Breakdown
@@ -83,7 +83,7 @@ Director synthesis, no peer. Reconcile `.workflow/artifacts/plan.md` + `.workflo
 
 ## 50-tool ceiling
 
-Your own session too. If close, do `wf_status`, commit, ask user to spawn fresh director.
+Your own session too. If close, do `wf_status`, ask user to spawn fresh director.
 
 ## On unclear scope
 

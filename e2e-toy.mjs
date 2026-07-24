@@ -90,7 +90,7 @@ console.log("\n=== DIRECTOR: wf_init ===");
 setRole("director");
 await call("wf_init");
 assert(fs.existsSync(".workflow/state.json"), "state.json exists");
-assert(fs.existsSync("progress.md"), "progress.md exists");
+assert(fs.existsSync(".workflow/progress.md"), "progress.md exists");
 // initial commit so SHA is always reachable
 const initSha = gitCommit("chore: init workflow");
 console.log("  init SHA:", initSha.slice(0, 7));
@@ -455,7 +455,7 @@ const clr = JSON.parse(fs.readFileSync(".workflow/clr-index.json", "utf8"));
 assert(clr.open.length === 0, "no open CLRs");
 
 // progress.md has all ✅
-const progress = fs.readFileSync("progress.md", "utf8");
+const progress = fs.readFileSync(".workflow/progress.md", "utf8");
 const checkCount = (progress.match(/✅/g) || []).length;
 assert(checkCount === 8, `progress.md has 8 ✅ (got ${checkCount})`);
 

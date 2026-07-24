@@ -33,4 +33,4 @@ File and stop. Even if you think you know the answer.
 
 ## On 50-tool ceiling
 
-Split. Commit partial source with clear `// TODO(T<n>)` markers, notify Director with remaining tasks, stop. (You can't write DRAFT to a `.md` — source `// TODO` is your DRAFT.)
+Split. Leave partial source with clear `// TODO(T<n>)` markers, notify Director with remaining tasks, stop. (You can't write DRAFT to a `.md` — source `// TODO` is your DRAFT.)
