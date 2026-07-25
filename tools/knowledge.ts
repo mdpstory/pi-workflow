@@ -1,0 +1,56 @@
+// ---- wf_knowledge_put / wf_knowledge_get (P1-1) ----
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { StringEnum, Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { role, workflowActive } from "../lib/identity.ts";
+import { freshFragments } from "../lib/knowledge.ts";
+import { knowledgeDir, repoRoot } from "../lib/paths.ts";
+import { deny, ok } from "../lib/reply.ts";
+
+export function registerKnowledgeTools(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "wf_knowledge_put",
+		label: "wf_knowledge_put",
+		description: "Store an immutable analysis fragment about a source file so other agents (or future workflow runs) can reuse it instead of re-deriving. scope=general is durable/repo-wide; scope=task is disposable, this workflow only.",
+		parameters: Type.Object({
+			file: Type.String({ description: "repo-relative path of the source file this note is about" }),
+			note: Type.String(),
+			scope: StringEnum(["general", "task"]),
+		}),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const dir = knowledgeDir(params.file, params.scope as "general" | "task");
+			fs.mkdirSync(dir, { recursive: true });
+			let mtime = "";
+			let size = "";
+			try {
+				const st = fs.statSync(path.resolve(repoRoot(), params.file));
+				mtime = String(st.mtimeMs);
+				size = String(st.size);
+			} catch {
+				// source file doesn't exist (yet, or was deleted) — fragment is always stale on read
+			}
+			const frag = `---\nfile: ${params.file}\nrole: ${role()}\nmtime: ${mtime}\nsize: ${size}\nwritten: ${new Date().toISOString()}\n---\n${params.note.trim()}\n`;
+			const name = `${process.pid}-${Date.now()}-${role()}.md`;
+			const tmp = path.join(dir, `.tmp-${name}`);
+			fs.writeFileSync(tmp, frag);
+			fs.renameSync(tmp, path.join(dir, name)); // atomic — immutable fragments never collide
+			return ok(`stored fragment ${name} (scope=${params.scope})`);
+		},
+	});
+
+	pi.registerTool({
+		name: "wf_knowledge_get",
+		label: "wf_knowledge_get",
+		description: "Retrieve stored analysis fragments about a source file — general (repo-wide) and task (this workflow) scope — filtered to ones still fresh (mtime+size match). Call before reading a source file another agent may already have analyzed.",
+		parameters: Type.Object({ file: Type.String() }),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const { sections, staleCount } = freshFragments(params.file);
+			const staleNote = staleCount ? `\n\n_${staleCount} stale fragment(s) skipped — file changed since last analysis._` : "";
+			const text = sections.length ? `${sections.join("\n\n")}${staleNote}` : `no fragments found for ${params.file}${staleNote}`;
+			return { content: [{ type: "text", text }], details: { ok: true } };
+		},
+	});
+}
