@@ -78,10 +78,10 @@ assert(/current: —/.test(s.content[0].text), "notifications stage machine unaf
 console.log("\n=== D: cross-namespace write is hard-blocked even for engineer ===");
 process.env.PI_WORKFLOW_ROLE = "engineer";
 process.env.PI_WORKFLOW_ID = "notifications";
-let h = await hook("write", { path: ".workflow/feature-x/artifacts/context.md" });
+let h = await hook("write", { path: ".workflow/feature-x/artifacts/clarifications.md" });
 assert(h?.block, "notifications-engineer BLOCKED from writing feature-x's artifacts");
-h = await hook("write", { path: ".workflow/notifications/artifacts/context.md" });
-assert(!h?.block, "notifications-engineer may write its own artifacts/context.md");
+h = await hook("write", { path: ".workflow/notifications/artifacts/clarifications.md" });
+assert(!h?.block, "notifications-engineer may write its own artifacts/clarifications.md");
 
 console.log("\n=== E: same director trying to init same id twice while alive → BLOCKED ===");
 process.env.PI_WORKFLOW_ROLE = "director";

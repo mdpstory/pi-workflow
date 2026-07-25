@@ -16,9 +16,9 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
 ## Procedure
 
 1. Read inputs: source code, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`, `.workflow/shared/artifacts/architecture.md`.
-2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries to understand existing code structure before reviewing changes.
+2. **Call `wf_knowledge_get` for files under review before reading them.** Use any existing fragments to understand existing code structure before diving into changes.
 3. Diff uncommitted changes (`git status`, `git diff`). Map every change to a task ID.
-4. **If you find patterns or file details not yet in context.md**, append them via `wf_context_append` (not `edit`/`write`) — helps QA and Documenter. Include `path:startLine-endLine` for every specific finding, not just the filename.
+4. **If you find patterns or file details not yet recorded**, call `wf_knowledge_put` (scope `task`) — helps QA and Documenter. Include `path:startLine-endLine` for every specific finding, not just the filename.
 3. Write `review.md`:
 
    ```markdown

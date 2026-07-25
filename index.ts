@@ -1,27 +1,40 @@
 /**
- * pi-workflow — viability spike
+ * pi-workflow — role-enforced, stage-gated AI workflow extension.
  *
- * Proves three hard parts at once:
- *   1. Custom stateful tools (wf_*) with disk-backed state under .workflow/
- *   2. Role-based path allowlist that hard-blocks write/edit
- *   3. CLR gate that hard-blocks write/edit while any OPEN CLR names current or upstream stage
+ * Role model (P0-2): three states, not two.
+ *   - "unassigned": no PI_WORKFLOW_ROLE env, no in-process wf_claim() call. A casual,
+ *     non-workflow session. No write gating. Only wf_status/wf_claim/wf_approve usable
+ *     among wf_* tools.
+ *   - "director": PI_WORKFLOW_ROLE=director env, OR wf_claim("director") called
+ *     in-process (never persisted to disk, never inherited by children — loading skill
+ *     wf-director calls wf_claim as step 0). Director's own write allowlist (ROLE_ALLOW.director)
+ *     is now hard-enforced, same as every other role.
+ *   - "<role>": PI_WORKFLOW_ROLE=<role> env — a dispatched subagent. Role allowlist +
+ *     CLR gate enforced.
+ * workflowActive() = role() !== "unassigned". Gating (write/edit hook, tool ceiling) only
+ * activates once a role exists — including for the director itself.
  *
- * Role is read from env PI_WORKFLOW_ROLE (per-process identity — can't be a shared config
- * file since multiple roles run concurrently as separate subagent processes). Unset
- * PI_WORKFLOW_ROLE now behaves consistently everywhere: it defaults to "director" for both
- * tool-body permission checks (role()) AND the write/edit gate in the tool_call hook —
- * see role(). Director's own write scope is itself a narrow allowlist (see ROLE_ALLOW.director
- * below), so defaulting the hook to director-level gating is safe: an unset-role session gets
- * the same restrictions an explicit director session would.
- * skipStages is read from a real config file — see "role" key note above vs. skipStages
- * below, which IS a static per-repo setting and lives in .pi/pi-workflow.json /
- * ~/.pi/agent/pi-workflow.json.
+ * Workflow id (P0-3): PI_WORKFLOW_ID env > .workflow/.active-id marker (read+written by
+ * every role, not director-only — makes "kill and restart" resume the same workflow) >
+ * mint fresh + write marker. wf_new() mints an explicit new id (start workflow #2, not by
+ * restarting a session). wf_list() enumerates all `.workflow/<id>/` namespaces.
+ *
  * State: .workflow/<id>/state.json, .workflow/<id>/clr-index.json
  * Artifacts (per-workflow, .workflow/<id>/artifacts/): plan.md, tasks.md, research.md,
  *            decisions.md, clarifications.md, review.md, test-report.md, changelog.md
  * Shared artifact (.workflow/shared/artifacts/, one copy for the whole repo across all
- *            parallel workflow ids — architecture is a codebase property, not a task property):
- *            architecture.md
+ *            parallel workflow ids — architecture is a codebase property, not a task
+ *            property): architecture.md
+ * Knowledge (P1): per-source-file immutable fragments, .workflow/shared/knowledge/ or
+ *            .workflow/<id>/knowledge/, see wf_knowledge_put/get.
+ * Bus (P2): .workflow/<id>/bus/<role>.jsonl, see wf_msg_post/poll/wf_bus_digest.
+ *
+ * P1-2 (mechanical read interception): implemented via the `tool_result` hook (which CAN
+ * substitute a tool's content — unlike `tool_call`, which is block-only). Opt-in through
+ * config `interceptReads`. A full-file `read` of a source with fresh (mtime+size matching)
+ * knowledge fragments returns the fragment(s) instead of the raw body; passing offset/limit
+ * is the escape hatch for raw source. Off by default because it changes read semantics.
+ * wf_knowledge_get remains the explicit path and works regardless of the flag.
  */
 
 import { execFileSync } from "node:child_process";
@@ -30,6 +43,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
+import { isReadToolResult } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ---- constants ----
@@ -48,13 +62,13 @@ type Stage = (typeof STAGES)[number];
 
 const ARTIFACT_FOR_STAGE: Record<Stage, string[]> = {
 	planning: ["plan.md", "tasks.md"],
-	research: ["research.md", "context.md"],
-	"task-breakdown": ["tasks.md", "context.md"], // director may edit
-	architecture: ["architecture.md", "context.md"],
-	implementation: ["context.md"], // source code + context
-	review: ["review.md", "context.md"],
-	testing: ["test-report.md", "context.md"],
-	documentation: ["changelog.md", "context.md"],
+	research: ["research.md"],
+	"task-breakdown": ["tasks.md"], // director may edit
+	architecture: ["architecture.md"],
+	implementation: [], // source code; knowledge fragments, not an artifact
+	review: ["review.md"],
+	testing: ["test-report.md"],
+	documentation: ["changelog.md"],
 };
 
 // Maps each stage to the role that should execute it.
@@ -73,21 +87,21 @@ const ROLE_FOR_STAGE: Record<Stage, string> = {
 // Which paths each role may write/edit. Empty = source code allowed, artifacts denied.
 const ROLE_ALLOW: Record<string, RegExp[]> = {
 	// NOTE: patterns are matched against the path *inside* the current session's
-// .workflow/<id>/ namespace (prefix already stripped) — see isPathAllowedForRole.
-// Director's non-artifact state files (state.json, clr-index.json, director.lock) are
-// handled by a separate "director only" branch in isPathAllowedForRole and don't need a
-// pattern here. This list therefore only needs to cover the *artifacts* director is
-// actually allowed to write directly — must NOT be a wildcard, or director could write
-// plan.md/research.md/review.md/test-report.md/changelog.md, which are supposed to be
-// hard-blocked (owned by Planner/Scout/Reviewer/QA/Documenter respectively).
-director: [/^artifacts\/decisions\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
-	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
-	scout: [/^artifacts\/research\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
-	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
-	engineer: [/^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/], // + source (default allow below)
-	reviewer: [/^artifacts\/review\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/],
-	qa: [/^artifacts\/test-report\.md$/, /^artifacts\/context\.md$/, /^artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
-	documenter: [/^artifacts\/changelog\.md$/, /^artifacts\/context\.md$/, /^docs\//, /^README\.md$/, /^artifacts\/clarifications\.md$/],
+	// .workflow/<id>/ namespace (prefix already stripped) — see isPathAllowedForRole.
+	// Director's non-artifact state files (state.json, clr-index.json, director.lock) are
+	// handled by a separate "director only" branch in isPathAllowedForRole and don't need a
+	// pattern here. This list therefore only needs to cover the *artifacts* director is
+	// actually allowed to write directly — must NOT be a wildcard, or director could write
+	// plan.md/research.md/review.md/test-report.md/changelog.md, which are supposed to be
+	// hard-blocked (owned by Planner/Scout/Reviewer/QA/Documenter respectively).
+	director: [/^artifacts\/decisions\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
+	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
+	scout: [/^artifacts\/research\.md$/, /^artifacts\/clarifications\.md$/],
+	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/clarifications\.md$/],
+	engineer: [/^artifacts\/clarifications\.md$/], // + source (default allow below)
+	reviewer: [/^artifacts\/review\.md$/, /^artifacts\/clarifications\.md$/],
+	qa: [/^artifacts\/test-report\.md$/, /^artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
+	documenter: [/^artifacts\/changelog\.md$/, /^docs\//, /^README\.md$/, /^artifacts\/clarifications\.md$/],
 };
 
 // Artifact md files. Anything not in this set is treated as "source" and allowed for engineer.
@@ -101,7 +115,6 @@ const ARTIFACT_MDS = new Set([
 	"review.md",
 	"test-report.md",
 	"changelog.md",
-	"context.md", // shared knowledge cache between agents
 ]);
 
 // Artifacts that live at .workflow/shared/artifacts/ instead of per-workflow.
@@ -114,10 +127,16 @@ interface RetryRec {
 	bumps: number; // failed attempts since last ruling
 	ruled: number; // director rulings issued on this key
 }
+interface PendingApproval {
+	stage: Stage;
+	sha: string;
+	summary: string;
+}
 interface WfState {
-	stages: Record<Stage, { status: "todo" | "in-progress" | "done" | "blocked" | "retry" | "failed"; sha?: string; retries?: number }>;
+	stages: Record<Stage, { status: "todo" | "in-progress" | "done" | "blocked"; sha?: string; retries?: number }>;
 	current: Stage | null;
 	rulings: Record<string, RetryRec>; // CLR-id or defect-key → counters
+	pendingApproval?: PendingApproval | null;
 }
 
 interface ClrIndex {
@@ -129,52 +148,38 @@ interface ClrIndex {
 function repoRoot(): string {
 	return process.cwd();
 }
-// Unique id for this session, stable for the lifetime of the extension process.
-// Each parallel pi *director* gets its own process → its own .workflow/<id>/ namespace,
-// so multiple independent workflows can run concurrently in the same repo.
-//
-// Resolution order:
-//   1. PI_WORKFLOW_ID env var — explicit override. REQUIRED if you want to run more than
-//      one director concurrently in the same repo (see marker caveat below).
-//   2. Director role, no env var → mint a fresh random id and publish it to
-//      .workflow/.active-id, so this director's own subagents can find it (step 3).
-//      Never *read* the marker as a director — doing so would collapse two independently
-//      launched directors onto the same workflow id/lock and falsely BLOCK the second one.
-//   3. Non-director role (subagent), no env var → read .workflow/.active-id. The
-//      `subagent` tool has no env passthrough — a PI_WORKFLOW_ID=xxx prefix in the task
-//      *text* does NOT set process.env in the spawned process — so this is how a subagent
-//      lands in the SAME namespace as the director that spawned it, without needing the
-//      text convention to actually work.
-//
-// Caveat: the marker is a single global "last active director" pointer, not per-director
-// storage. It converges subagents correctly for the common case (one workflow active at a
-// time). If you deliberately run two directors concurrently in the same repo, set
-// PI_WORKFLOW_ID explicitly for each and pass it through to their subagents' task text
-// (step 1) — the marker alone cannot disambiguate which subagent belongs to which
-// concurrent director.
-// Lazily minted/memoized — NOT computed at module load. Marker file (.workflow/.active-id)
-// must only appear once a wf_* tool is actually invoked, not just because the extension loaded.
+
+function mintId(): string {
+	return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+}
+
+// Resolution order (P0-3):
+//   1. PI_WORKFLOW_ID env var — explicit, and the mechanism subagents rely on (director
+//      passes it via `subagent({ env: { PI_WORKFLOW_ID } })`).
+//   2. .workflow/.active-id marker — read (and written if absent) by ANY role, director
+//      included. This is what makes "kill the director, restart" resume the same
+//      workflow instead of minting a fresh id every process start.
+//   3. Neither present → mint fresh, write marker.
+// wf_new() explicitly mints a NEW id and overwrites the marker — that's how you start a
+// second, independent workflow, rather than by restarting the session.
 let _sessionId: string | undefined;
+function markerPath(): string {
+	return path.join(wfRoot(), ".active-id");
+}
 function sessionId(): string {
 	if (_sessionId) return _sessionId;
-	const markerPath = path.join(process.cwd(), ".workflow", ".active-id");
-	const isDirector = (process.env.PI_WORKFLOW_ROLE ?? "director").toLowerCase() === "director";
-	if (!isDirector) {
-		try {
-			const existing = fs.readFileSync(markerPath, "utf8").trim();
-			if (existing) return (_sessionId = existing);
-		} catch {
-			// no marker yet (subagent spawned before any director ran here) — mint our own below
-		}
+	try {
+		const existing = fs.readFileSync(markerPath(), "utf8").trim();
+		if (existing) return (_sessionId = existing);
+	} catch {
+		// no marker yet — mint below
 	}
-	const fresh = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-	if (isDirector) {
-		try {
-			fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-			fs.writeFileSync(markerPath, fresh);
-		} catch {
-			// best-effort; if we can't persist it, subagents just won't converge
-		}
+	const fresh = mintId();
+	try {
+		fs.mkdirSync(wfRoot(), { recursive: true });
+		fs.writeFileSync(markerPath(), fresh);
+	} catch {
+		// best-effort; if we can't persist it, other sessions just won't converge
 	}
 	return (_sessionId = fresh);
 }
@@ -212,46 +217,56 @@ function clrIndexPath(): string {
 function lockPath(): string {
 	return path.join(wfDir(), "director.lock");
 }
+function busDir(): string {
+	return path.join(wfDir(), "bus");
+}
+function busFile(target: string): string {
+	return path.join(busDir(), `${target}.jsonl`);
+}
+
 // ---- settings.json config (project overrides global) ----
-// Static per-repo settings only (NOT per-process identity like role, which stays env-based
-// so concurrent director/planner/engineer subagents don't collapse onto one shared value).
-// Project: <repo>/.pi/pi-workflow.json   Global: ~/.pi/agent/pi-workflow.json
-// Shape: { "skipStages": ["review", "testing"] }
+// Static per-repo settings only (NOT per-process identity like role, which stays env/claim
+// based so concurrent director/planner/engineer subagents don't collapse onto one shared
+// value). Project: <repo>/.pi/pi-workflow.json   Global: ~/.pi/agent/pi-workflow.json
+// Shape: { "skipStages": ["review", "testing"], "requireApproval": ["architecture"], "interceptReads": true }
 interface WfConfig {
 	skipStages?: string[];
+	requireApproval?: string[];
+	interceptReads?: boolean; // P1-2: substitute fresh knowledge fragments for full read() bodies
 }
 function loadConfig(): WfConfig {
 	const globalPath = path.join(os.homedir(), ".pi", "agent", "pi-workflow.json");
 	const projectPath = path.join(repoRoot(), ".pi", "pi-workflow.json");
 	const g = readJson<WfConfig>(globalPath, {});
 	const p = readJson<WfConfig>(projectPath, {});
-	return { skipStages: p.skipStages ?? g.skipStages };
+	return { skipStages: p.skipStages ?? g.skipStages, requireApproval: p.requireApproval ?? g.requireApproval, interceptReads: p.interceptReads ?? g.interceptReads };
 }
-// PI_WORKFLOW_ROLE unset → defaults to "director" everywhere, consistently: both
-// tool-body permission checks (role()) and the write/edit gate in the tool_call hook
-// use this same function. Director's own write scope is a narrow allowlist (see
-// ROLE_ALLOW.director), so an unset-role session getting director-level gating by
-// default is safe — it can never silently bypass the gate the way an unrestricted
-// null-role short-circuit could.
+
+// ---- role (P0-2) ----
+
+// In-process only — never written to disk, never inherited by a spawned child (children get
+// their identity from PI_WORKFLOW_ROLE env, set explicitly by the director's subagent dispatch).
+let _claimedRole: string | undefined;
+
 function role(): string {
 	const v = process.env.PI_WORKFLOW_ROLE;
-	return v ? v.toLowerCase() : "director";
+	if (v) return v.toLowerCase();
+	if (_claimedRole) return _claimedRole;
+	return "unassigned";
 }
-// Gating (role allowlist + CLR gate) only kicks in when a role was deliberately
-// assigned via PI_WORKFLOW_ROLE — i.e. an actual dispatched subagent (director spawns
-// these as `PI_WORKFLOW_ROLE=<role> ...`). The top-level director session itself never
-// sets this by hand (it's the default identity — see role()), so director's own
-// "don't touch source / architecture.md" rule is NOT hard-enforced here — it's a
-// convention-only discipline rule, same tier as director's other self-restrictions
-// already documented as convention-only in wf-director's SKILL.md (plan.md,
-// research.md, review.md, test-report.md, changelog.md). Deliberately NOT keyed off
-// state.json/wf_init: director calls wf_init as step 1 of nearly every task, so a
-// file-existence signal would make the hard gate active for virtually all of a
-// director's working life — defeating the point, since director is not an opt-in
-// identity here.
+// Gating (role allowlist, CLR gate, tool ceiling) activates the moment a role exists —
+// including for the director, once claimed. A bare pi session with nothing loaded stays
+// "unassigned": untouched, no gating, only wf_status/wf_claim/wf_approve usable.
 function workflowActive(): boolean {
-	return process.env.PI_WORKFLOW_ROLE !== undefined;
+	return role() !== "unassigned";
 }
+function requireDirector(): { ok: false; msg: string } | null {
+	const r = role();
+	if (r === "unassigned") return { ok: false, msg: "no role claimed — load skill wf-director or set PI_WORKFLOW_ROLE" };
+	if (r !== "director") return { ok: false, msg: "director only" };
+	return null;
+}
+
 function readJson<T>(p: string, fallback: T): T {
 	try {
 		return JSON.parse(fs.readFileSync(p, "utf8")) as T;
@@ -267,18 +282,30 @@ function writeJson(p: string, obj: unknown): void {
 	fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
 	fs.renameSync(tmp, p);
 }
+function readJsonl(p: string): Array<Record<string, string>> {
+	try {
+		return fs
+			.readFileSync(p, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l));
+	} catch {
+		return [];
+	}
+}
 
 // ---- concurrency lock ----
 // Detects "is a workflow already running in this dir" via PID liveness.
 // Self-heals: if the PID that holds the lock is dead (session was killed /
 // quit), the lock is considered stale and silently reclaimed — no manual
 // unlock step needed after an abort.
+// (C7) heartbeatAt field removed: it was never consulted for staleness — liveness is,
+// and always was, PID-only (process.kill(pid, 0)). A field nobody reads is dead weight.
 
 interface LockInfo {
 	pid: number;
 	host: string;
 	startedAt: string;
-	heartbeatAt: string;
 }
 
 function isPidAlive(pid: number): boolean {
@@ -300,7 +327,7 @@ function readLock(): LockInfo | null {
  *  close the read-then-write TOCTOU race between two directors starting at the same
  *  instant — only one process's exclusive create can win; the loser falls back to
  *  reading what the winner wrote and reports it as foreign. Refreshing our own
- *  existing lock (heartbeat) still uses a plain write since we already own it. */
+ *  existing lock still uses a plain write since we already own it. */
 function acquireOrCheckLock(): LockInfo | null {
 	const existing = readLock();
 	if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) {
@@ -310,7 +337,6 @@ function acquireOrCheckLock(): LockInfo | null {
 		pid: process.pid,
 		host: os.hostname(),
 		startedAt: existing && existing.pid === process.pid ? existing.startedAt : new Date().toISOString(),
-		heartbeatAt: new Date().toISOString(),
 	};
 	if (!existing) {
 		// No lock file observed — try to win it atomically via exclusive create.
@@ -339,6 +365,7 @@ function loadState(): WfState {
 		stages: Object.fromEntries(STAGES.map((s) => [s, { status: "todo" }])) as WfState["stages"],
 		current: null,
 		rulings: {},
+		pendingApproval: null,
 	};
 	return readJson(statePath(), empty);
 }
@@ -358,6 +385,10 @@ function stageIndex(s: string): number {
 // wf_stage_complete waives their artifact requirement too.
 function skipStagesSet(): Set<Stage> {
 	const names = (loadConfig().skipStages ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
+}
+function requireApprovalSet(): Set<Stage> {
+	const names = (loadConfig().requireApproval ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
 	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
 }
 
@@ -416,14 +447,14 @@ function saveState(state: WfState): void {
 	writeJson(statePath(), state);
 }
 
-// Single canonical "is this artifact still an empty stub" check, shared by wf_init
-// (deciding whether to overwrite) and wf_stage_complete (deciding whether the stage's
-// required artifact was actually filled in). Previously wf_init compared against an
-// exact stub string while wf_stage_complete used a looser substring/blank check —
-// the two could disagree if the stub template text ever changed between versions.
+// (C4) Exact-shape stub check, not "includes _empty_ anywhere" — the old substring check
+// mis-flagged any artifact that merely *quoted* the sentinel token as still being a stub.
+// The stub template wf_init writes is exactly `# <title>\n\n_empty_\n`; match that shape.
+const STUB_RE = /^#\s.*\n\n_empty_\s*$/;
 function isStubContent(content: string): boolean {
 	const trimmed = content.trim();
-	return trimmed === "" || content.includes("_empty_");
+	if (trimmed === "") return true;
+	return STUB_RE.test(trimmed);
 }
 
 // ---- gating logic ----
@@ -446,7 +477,7 @@ function wfNamespaceRel(relPath: string): { inside: false } | { inside: true; ki
 
 function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason?: string } {
 	const allow = ROLE_ALLOW[r];
-	if (!allow) return { ok: false, reason: `unknown role "${r}"` };
+	if (!allow) return { ok: false, reason: `unknown or unassigned role "${r}" — claim a role first` };
 
 	const ns = wfNamespaceRel(relPath);
 	if (ns.inside) {
@@ -475,7 +506,7 @@ function isPathAllowedForRole(r: string, relPath: string): { ok: boolean; reason
 				: { ok: false, reason: `${r} not permitted to write ${relPath}` };
 		}
 
-		// Non-artifact state files (state.json, clr-index.json, director.lock): director only.
+		// Non-artifact state files (state.json, clr-index.json, director.lock, bus/): director only.
 		const isArtifact = ns.inner.startsWith("artifacts/");
 		if (!isArtifact) {
 			return r === "director" ? { ok: true } : { ok: false, reason: `only director may write .workflow/${workflowId()}/ state files` };
@@ -526,40 +557,37 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
-	// The 50-call ceiling only applies to dispatched subagents (workflowActive()).
-	// The role allowlist + CLR gate on write/edit
-	// only activate once a workflow is actually in play — see workflowActive() — so
-	// merely having this extension installed doesn't default every session to
-	// "director" and block ordinary source edits nobody asked to have gated.
+	// The 50-call ceiling and the role/CLR gate only activate once a workflow is actually
+	// in play (workflowActive()) — a bare "unassigned" session (extension installed but no
+	// role claimed / env set) is completely untouched. See role()/workflowActive().
 	pi.on("tool_call", async (event, _ctx) => {
-		const r0 = role();
-
-		// Ceiling only applies to dispatched subagents (PI_WORKFLOW_ROLE explicitly
-		// set) — never to the top-level director/main session. See workflowActive().
+		// Ceiling only applies to a session with an active role.
 		if (workflowActive()) toolCalls += 1;
 
-		// 50-tool ceiling. Above cap, only allow write/edit so the agent can
-		// mark its artifact `DRAFT — incomplete, split required` and stop.
-		const CEILING_EXEMPT = ["write", "edit", "wf_clr_open", "intercom"];
-		if (workflowActive() && toolCalls > TOOL_CAP) {
+		// (C3) Hard-stop (cap+5) is checked FIRST and independently of the soft ceiling, and
+		// applies to every tool except the two escalation channels. The old nesting made the
+		// hard-stop reachable only for tools that were also in CEILING_EXEMPT (write/edit/
+		// wf_clr_open/intercom), and then re-exempted wf_clr_open/intercom from it — so it
+		// could only ever fire for write/edit, the opposite of "stop everything but let the
+		// agent escalate."
+		const HARD_STOP_EXEMPT = ["wf_clr_open", "wf_msg_post"];
+		const CEILING_EXEMPT = ["write", "edit", "wf_clr_open", "wf_msg_post", "intercom"];
+		if (workflowActive() && toolCalls > TOOL_CAP + 5) {
+			if (!HARD_STOP_EXEMPT.includes(event.toolName)) {
+				return { block: true, reason: `pi-workflow: hard stop at ${toolCalls} tool calls. Director must reassign.` };
+			}
+		} else if (workflowActive() && toolCalls > TOOL_CAP) {
 			if (!CEILING_EXEMPT.includes(event.toolName)) {
 				return {
 					block: true,
-					reason: `pi-workflow: session hit ${TOOL_CAP}-tool ceiling (call ${toolCalls}). Mark your artifact \`DRAFT — incomplete, split required\`, propose sub-tasks, notify Director via wf_clr_open or intercom, then stop.`,
+					reason: `pi-workflow: session hit ${TOOL_CAP}-tool ceiling (call ${toolCalls}). Mark your artifact \`DRAFT — incomplete, split required\`, propose sub-tasks, notify Director via wf_clr_open or wf_msg_post, then stop.`,
 				};
-			}
-			// Hard stop past cap+5, but never block the escalation channels
-			// themselves — otherwise the agent can't comply with the instruction above.
-			if (toolCalls > TOOL_CAP + 5 && event.toolName !== "wf_clr_open" && event.toolName !== "intercom") {
-				return { block: true, reason: `pi-workflow: hard stop at ${toolCalls} tool calls. Director must reassign.` };
 			}
 		}
 
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
 
-		// No role explicitly assigned via PI_WORKFLOW_ROLE — this is the top-level
-		// director (or a casual, non-workflow session), not a dispatched subagent.
-		// Don't hard-gate; see workflowActive() for why.
+		// No role active — untouched casual session. See workflowActive().
 		if (!workflowActive()) return undefined;
 
 		const p = (event.input as { path?: string }).path;
@@ -569,9 +597,9 @@ export default function (pi: ExtensionAPI) {
 		// Skip files outside repo root — not our business.
 		if (rel.startsWith("..")) return undefined;
 
-		const r = r0;
+		const r = role();
 
-		// 1. Role allowlist
+		// 1. Role allowlist — hard-enforced for every role now, director included (P0-2).
 		const allow = isPathAllowedForRole(r, rel);
 		if (!allow.ok) {
 			return { block: true, reason: `pi-workflow: ${allow.reason}` };
@@ -596,22 +624,127 @@ export default function (pi: ExtensionAPI) {
 		return undefined;
 	});
 
+	// --- tool_result hook: P1-2 mechanical read interception (opt-in) ---
+	// Unlike tool_call (block-only), tool_result CAN substitute a tool's content. When
+	// config.interceptReads is on and a role is active, a full-file `read` of a source that
+	// already has FRESH knowledge fragments (mtime+size match) returns the fragment(s)
+	// instead of the raw body — the token win the plan wanted, enforced mechanically.
+	// Guardrails (why this is safe + opt-in, not default):
+	//   - Only full reads are intercepted. Passing offset OR limit is the escape hatch that
+	//     always yields raw source (an engineer about to edit a file reads a slice / uses
+	//     offset:1 to force the real bytes).
+	//   - Never intercepts .workflow/ artifacts or files without fresh fragments.
+	pi.on("tool_result", async (event, _ctx) => {
+		if (!workflowActive()) return undefined;
+		if (!loadConfig().interceptReads) return undefined;
+		if (!isReadToolResult(event) || event.isError) return undefined;
+		const input = event.input as { path?: string; offset?: number; limit?: number };
+		if (!input.path) return undefined;
+		if (input.offset != null || input.limit != null) return undefined; // escape hatch: raw source
+		const rel = relFromRepo(input.path);
+		if (rel.startsWith("..") || rel.startsWith(".workflow/")) return undefined;
+		const { sections } = freshFragments(rel);
+		if (!sections.length) return undefined;
+		const header = `cached analysis (mtime+size still match) — re-run read with an offset to force raw source.\n\n`;
+		return { content: [{ type: "text", text: header + sections.join("\n\n") }] };
+	});
+
+	// --- wf_claim ---
+	pi.registerTool({
+		name: "wf_claim",
+		label: "wf_claim",
+		description:
+			"Claim a role for THIS process only (in-memory, never written to disk, never inherited by subagents). Loading skill wf-director calls wf_claim(\"director\") as step 0 — that is what makes a session the director, not merely being unassigned.",
+		parameters: Type.Object({ role: StringEnum(["director"]) }),
+		async execute(_id, params) {
+			if (process.env.PI_WORKFLOW_ROLE) {
+				return deny(`role already fixed via env PI_WORKFLOW_ROLE=${process.env.PI_WORKFLOW_ROLE} — wf_claim not needed/applicable`);
+			}
+			_claimedRole = params.role;
+			return ok(`claimed role: ${params.role} (in-process only)`);
+		},
+	});
+
+	// --- wf_new ---
+	pi.registerTool({
+		name: "wf_new",
+		label: "wf_new",
+		description: "Mint a fresh workflow id, update the resume marker, and return it. Use this to start a second/parallel workflow instead of relying on session restart. Director only.",
+		parameters: Type.Object({ label: Type.Optional(Type.String({ description: "short human label appended to the id" })) }),
+		async execute(_id, params) {
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
+			if (process.env.PI_WORKFLOW_ID) {
+				return deny(`PI_WORKFLOW_ID=${process.env.PI_WORKFLOW_ID} is set explicitly — wf_new cannot override an env-pinned id; unset it or start a new process/env for a second workflow`);
+			}
+			const label = params.label ? params.label.trim().replace(/[^a-zA-Z0-9._-]/g, "-") : "";
+			const fresh = label ? `${mintId()}-${label}` : mintId();
+			_sessionId = fresh;
+			try {
+				fs.mkdirSync(wfRoot(), { recursive: true });
+				fs.writeFileSync(markerPath(), fresh);
+			} catch {
+				// best-effort
+			}
+			return ok(`new workflow id: ${fresh} (marker updated — call wf_init next)`);
+		},
+	});
+
+	// --- wf_list ---
+	pi.registerTool({
+		name: "wf_list",
+		label: "wf_list",
+		description: "Enumerate .workflow/<id>/ namespaces in this repo with current stage and director-lock liveness. Any role.",
+		parameters: Type.Object({}),
+		async execute() {
+			const root = wfRoot();
+			let ids: string[] = [];
+			try {
+				ids = fs
+					.readdirSync(root, { withFileTypes: true })
+					.filter((d) => d.isDirectory() && d.name !== "shared")
+					.map((d) => d.name);
+			} catch {
+				// no .workflow/ yet
+			}
+			if (!ids.length) return { content: [{ type: "text", text: "no workflows found" }], details: { ids: [] } };
+			const lines = ids.map((id) => {
+				const st = readJson<WfState | null>(path.join(root, id, "state.json"), null);
+				const lock = readJson<LockInfo | null>(path.join(root, id, "director.lock"), null);
+				const lockStr = lock ? (isPidAlive(lock.pid) ? `ALIVE pid ${lock.pid}` : "STALE") : "none";
+				const marker = id === (_sessionId ?? "") ? " (this session)" : "";
+				return `${id}${marker}: current=${st?.current ?? "—"} lock=${lockStr}`;
+			});
+			return { content: [{ type: "text", text: lines.join("\n") }], details: { ids } };
+		},
+	});
+
 	// --- wf_init ---
 	pi.registerTool({
 		name: "wf_init",
 		label: "wf_init",
 		description: "Initialize .workflow/ state and stub artifacts. Director only.",
 		parameters: Type.Object({}),
-		async execute() {
-			if (role() !== "director") {
-				return { content: [{ type: "text", text: "denied: director only" }], details: { ok: false } };
-			}
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
 			fs.mkdirSync(artifactsDir(), { recursive: true });
+
+			// (C5) Ask before writing .gitignore (when there's a UI to ask through), and match
+			// both ".workflow" and ".workflow/" forms — the old check only looked for the
+			// slashed form and would append a duplicate entry for a bare ".workflow" line.
 			const gitignorePath = path.join(repoRoot(), ".gitignore");
+			const hasEntryRe = /(^|\n)\s*\.workflow\/?\s*($|\n)/;
 			if (fs.existsSync(gitignorePath)) {
 				const gitignore = fs.readFileSync(gitignorePath, "utf8");
-				if (!gitignore.includes(".workflow/")) fs.appendFileSync(gitignorePath, "\n.workflow/\n");
-				
+				if (!hasEntryRe.test(gitignore)) {
+					let proceed = true;
+					const anyCtx = ctx as unknown as { hasUI?: boolean; ui?: { confirm: (t: string, m: string) => Promise<boolean> } };
+					if (anyCtx?.hasUI && anyCtx.ui?.confirm) {
+						proceed = await anyCtx.ui.confirm("pi-workflow", 'Append ".workflow/" to .gitignore?');
+					}
+					if (proceed) fs.appendFileSync(gitignorePath, "\n.workflow/\n");
+				}
 			} else {
 				fs.writeFileSync(gitignorePath, ".workflow/\n");
 			}
@@ -620,8 +753,8 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{
 						type: "text",
-						text: `BLOCKED: another director session is already running workflow "${workflowId()}" (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}, last heartbeat ${foreign.heartbeatAt}). ` +
-							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel in this same repo, set a distinct PI_WORKFLOW_ID (e.g. PI_WORKFLOW_ID=notifications) before calling wf_init — each id gets its own isolated .workflow/<id>/ lock, state, and artifacts. Alternatively use a separate git worktree.`,
+						text: `BLOCKED: another director session is already running workflow "${workflowId()}" (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}). ` +
+							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel in this same repo, call wf_new (or set a distinct PI_WORKFLOW_ID, e.g. PI_WORKFLOW_ID=notifications) before calling wf_init — each id gets its own isolated .workflow/<id>/ lock, state, and artifacts. Alternatively use a separate git worktree.`,
 					}],
 					details: { ok: false, decision: "LOCKED", lock: foreign },
 				};
@@ -644,10 +777,11 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_stage_start",
 		label: "wf_stage_start",
-		description: "Set current stage to <stage>. Director only. Rejects if previous stage not done. Stages listed in PI_WORKFLOW_SKIP_STAGES (comma-separated) are auto-skipped and chained through.",
+		description: "Set current stage to <stage>. Director only. Rejects if previous stage not done. Stages listed in skipStages config are auto-skipped and chained through.",
 		parameters: Type.Object({ stage: StringEnum([...STAGES]) }),
 		async execute(_id, params) {
-			if (role() !== "director") return deny("director only");
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
 			const state = loadState();
 			const target = params.stage as Stage;
 			const idx = stageIndex(target);
@@ -667,9 +801,8 @@ export default function (pi: ExtensionAPI) {
 			while (cur) {
 				// An OPEN CLR at or before this stage must stop the auto-skip chain here —
 				// otherwise a stage with an unresolved clarification gets silently marked
-				// "done" via config, leaving state internally inconsistent (done + blocking
-				// CLR still open against it). Surface it as the normal in-progress/blocked
-				// stage instead so the director sees and resolves it through the usual path.
+				// "done" via config, leaving state internally inconsistent. Surface it as the
+				// normal in-progress/blocked stage instead so the director resolves it normally.
 				if (clrBlocksStage(clrForSkip, cur).blocked) break;
 				if (skip.has(cur)) {
 					state.stages[cur].status = "done";
@@ -712,26 +845,31 @@ export default function (pi: ExtensionAPI) {
 					`\n## auto-skip (architecture.md unchanged since last stamp)\n- Skipped: ${freshChain.join(", ")}\n`,
 				);
 			}
-			acquireOrCheckLock(); // refresh heartbeat; also self-reclaims a stale lock
+			acquireOrCheckLock(); // refresh lock; also self-reclaims a stale one
 
 			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
 			resetToolCalls();
 
 			const allSkipped = [...skippedChain, ...freshChain];
 
+			// (C1) Auto-skipped stages are ALREADY marked done above — do not instruct the
+			// director to call wf_stage_complete(sha:"auto-skip") for them, that sha fails the
+			// `^[0-9a-f]{7,40}$` validation and produced an infinite BLOCKED loop. Say so
+			// explicitly. (wf_stage_complete also now no-ops safely if called anyway — see C1
+			// note there.)
 			if (!cur) {
-				return ok(`stage(s) skipped: ${allSkipped.join(", ")}. Workflow reached end — no stage in-progress.`);
+				return ok(`stage(s) skipped: ${allSkipped.join(", ")}. Workflow reached end — no stage in-progress. Do NOT call wf_stage_complete for skipped stages, they are already "done".`);
 			}
 
-			// Delegation guidance: tell solo directors to spawn a subagent
+			// Delegation guidance (P0-1): env passthrough, not a task-text prefix convention.
 			const delegateRole = ROLE_FOR_STAGE[cur];
 			const artifacts = ARTIFACT_FOR_STAGE[cur];
 			const artifactList = artifacts.length ? artifacts.join(", ") : "source code";
-			const skippedNote = allSkipped.length ? ` (auto-skipped: ${allSkipped.join(", ")})` : "";
+			const skippedNote = allSkipped.length
+				? ` (auto-skipped: ${allSkipped.join(", ")} — do NOT call wf_stage_complete for those, they are already "done")`
+				: "";
 			const hint = [
-				`\n\nDELEGATE: Spawn subagent with agent="${delegateRole}".`,
-				`Task prompt must start with "PI_WORKFLOW_ROLE=${delegateRole} PI_WORKFLOW_ID=${workflowId()}" and load skill "wf-${delegateRole}".`,
-				`(This id is also auto-shared via .workflow/.active-id, so the subagent lands in the same namespace even though this text is not an env var in its process — keep the prefix for role/readability.)`,
+				`\n\nDELEGATE: subagent({ agent: "${delegateRole}", env: { PI_WORKFLOW_ROLE: "${delegateRole}", PI_WORKFLOW_ID: "${workflowId()}" }, task: "Load skill wf-${delegateRole}. ..." })`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
 				`When finished, call wf_stage_complete("${cur}", sha).`,
@@ -751,10 +889,22 @@ export default function (pi: ExtensionAPI) {
 			skip: Type.Optional(Type.String({ description: "trivial-task escape: skip this and remaining pre-implementation stages, reason logged to decisions.md" })),
 		}),
 		async execute(_id, params) {
-			if (role() !== "director") return deny("director only");
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
 			const state = loadState();
 			const clr = loadClr();
 			const stage = params.stage as Stage;
+
+			// (C1) Already-done stage (auto-skip, or a stray repeat call) → APPROVED no-op
+			// instead of running the full checklist (which would reject a non-sha "auto-skip"
+			// marker and BLOCK forever).
+			if (state.stages[stage].status === "done" && !params.skip) {
+				return {
+					content: [{ type: "text", text: `APPROVED (noop) — ${stage} already done @ ${state.stages[stage].sha ?? "?"}` }],
+					details: { ok: true, decision: "APPROVED", stage, sha: state.stages[stage].sha, noop: true },
+				};
+			}
+
 			const sha = params.sha ?? crypto.randomBytes(4).toString("hex");
 
 			// --- trivial-task escape hatch ---
@@ -799,11 +949,9 @@ export default function (pi: ExtensionAPI) {
 			const gate = clrBlocksStage(clr, stage);
 			if (gate.blocked) errors.push(`OPEN CLRs block: ${gate.ids.join(", ")}`);
 
-			// 3. retry limit — checked against state.rulings (key-scoped, cumulative across
-			// stage boundaries), not a per-stage mirror. Any defect key currently sitting at
-			// >3 unruled bumps means the director skipped calling wf_retry_rule and must do so
-			// before this (or any later) stage can complete.
-			const stuckKeys = Object.entries(state.rulings).filter(([, rec]) => rec.bumps > 3).map(([key]) => key);
+			// 3. (C2) retry limit — >= 3, matching wf_retry_bump's own DIRECTOR_RULE threshold.
+			// Previously this used `> 3`, one bump later than the bump tool itself warned at.
+			const stuckKeys = Object.entries(state.rulings).filter(([, rec]) => rec.bumps >= 3).map(([key]) => key);
 			if (stuckKeys.length) errors.push(`retry cap exceeded for key(s) needing wf_retry_rule: ${stuckKeys.join(", ")}`);
 
 			// 4. SHA sanity
@@ -813,6 +961,27 @@ export default function (pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text", text: `BLOCKED\n- ${errors.join("\n- ")}` }],
 					details: { ok: false, decision: "BLOCKED", errors },
+				};
+			}
+
+			// --- P3: human-in-the-loop gate ---
+			// A stage listed in requireApproval does NOT get marked done here. Instead this
+			// halts with AWAITING_HUMAN and a summary; only wf_approve (callable exclusively by
+			// an "unassigned" — i.e. human — session) can finalize it.
+			if (requireApprovalSet().has(stage)) {
+				const summary = [
+					"## produced",
+					`- artifact(s): ${ARTIFACT_FOR_STAGE[stage].join(", ") || "source code"}`,
+					"## next",
+					`- director intends to proceed to: ${nextStage(stage) ?? "(workflow end)"}`,
+					"## question",
+					`- is this correct? good to proceed? call wf_approve(stage="${stage}", sha="${sha}", verdict="approve"|"reject", note?)`,
+				].join("\n");
+				state.pendingApproval = { stage, sha, summary };
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `AWAITING_HUMAN\n${summary}` }],
+					details: { ok: false, decision: "AWAITING_HUMAN", stage, sha },
 				};
 			}
 
@@ -828,6 +997,46 @@ export default function (pi: ExtensionAPI) {
 				content: [{ type: "text", text: `APPROVED ${stage} @ ${sha.slice(0, 7)}` }],
 				details: { ok: true, decision: "APPROVED", stage, sha },
 			};
+		},
+	});
+
+	// --- wf_approve (P3) ---
+	pi.registerTool({
+		name: "wf_approve",
+		label: "wf_approve",
+		description: "Approve or reject a stage awaiting the human gate (see requireApproval config). Callable ONLY by an unassigned (human) session — never by director or any agent role.",
+		parameters: Type.Object({
+			stage: StringEnum([...STAGES]),
+			sha: Type.String(),
+			verdict: StringEnum(["approve", "reject"]),
+			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
+		}),
+		async execute(_id, params) {
+			if (role() !== "unassigned") return deny("wf_approve is human-only — no claimed/env role may call it");
+			const state = loadState();
+			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
+				return deny(`no matching pending approval for stage=${params.stage} sha=${params.sha}`);
+			}
+			if (params.verdict === "reject") {
+				state.pendingApproval = null;
+				state.stages[params.stage as Stage].status = "in-progress";
+				saveState(state);
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## human rejection: ${params.stage} @ ${params.sha.slice(0, 7)}\n${params.note ?? "(no note given)"}\n`,
+				);
+				return ok(`REJECTED ${params.stage} — reset to in-progress with correction note in decisions.md`);
+			}
+			if (params.stage === "architecture") {
+				const head = currentGitSha();
+				if (head) stampArchitecture(head);
+			}
+			state.stages[params.stage as Stage].status = "done";
+			state.stages[params.stage as Stage].sha = params.sha;
+			state.current = nextStage(params.stage as Stage);
+			state.pendingApproval = null;
+			saveState(state);
+			return ok(`APPROVED (human) ${params.stage} @ ${params.sha.slice(0, 7)}`);
 		},
 	});
 
@@ -869,9 +1078,11 @@ export default function (pi: ExtensionAPI) {
 		description: "Resolve a CLR. Director only for now.",
 		parameters: Type.Object({ id: Type.String(), resolution: Type.String() }),
 		async execute(_id, params) {
-			if (role() !== "director") return deny("director only");
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
 			const clr = loadClr();
 			const before = clr.open.length;
+			const target = clr.open.find((c) => c.id === params.id);
 			clr.open = clr.open.filter((c) => c.id !== params.id);
 			if (clr.open.length === before) return deny(`no OPEN CLR with id ${params.id}`);
 			writeJson(clrIndexPath(), clr);
@@ -880,6 +1091,18 @@ export default function (pi: ExtensionAPI) {
 				path.join(artifactsDir(), "clarifications.md"),
 				`\n<!-- ${params.id} resolved by director: ${params.resolution} -->\n`,
 			);
+			// (C6) Restore "blocked" → "in-progress" once nothing else still blocks that stage —
+			// previously a resolved CLR left the stage's status permanently stuck at "blocked"
+			// even though clrBlocksStage() (the thing that actually gates writes) had already
+			// cleared. status was write-only: set by wf_clr_open, never consulted or restored.
+			if (target) {
+				const state = loadState();
+				const stageRec = state.stages[target.stage as Stage];
+				if (stageRec && stageRec.status === "blocked" && !clrBlocksStage(clr, target.stage as Stage).blocked) {
+					stageRec.status = "in-progress";
+					saveState(state);
+				}
+			}
 			return ok(`resolved ${params.id}`);
 		},
 	});
@@ -920,7 +1143,8 @@ export default function (pi: ExtensionAPI) {
 		description: "Director ruling on a stuck retry key. Resets bumps, increments ruled count, logs to decisions.md. HUMAN escalation at 3 rulings.",
 		parameters: Type.Object({ key: Type.String(), ruling: Type.String({ description: "the decision text" }) }),
 		async execute(_id, params) {
-			if (role() !== "director") return deny("director only");
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
 			const state = loadState();
 			const rec = state.rulings[params.key] ?? { bumps: 0, ruled: 0 };
 			rec.ruled += 1;
@@ -940,73 +1164,267 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_status",
 		label: "wf_status",
-		description: "Dump workflow state, current stage, open CLRs. Any role.",
+		description: "Dump workflow state, current stage, open CLRs. Any role, including unassigned.",
 		parameters: Type.Object({}),
 		async execute() {
 			const state = loadState();
 			const clr = loadClr();
 			const lock = readLock();
 			const lockLine = lock
-				? `lock: pid ${lock.pid} on ${lock.host} (${isPidAlive(lock.pid) ? "ALIVE" : "STALE — will be reclaimed"}), heartbeat ${lock.heartbeatAt}`
+				? `lock: pid ${lock.pid} on ${lock.host} (${isPidAlive(lock.pid) ? "ALIVE" : "STALE — will be reclaimed"}), started ${lock.startedAt}`
 				: "lock: none";
 			const lines = [
 				`role: ${role()}`,
 				`workflow id: ${workflowId()}`,
 				`current: ${state.current ?? "—"}`,
 				`open CLRs: ${clr.open.length ? clr.open.map((c) => `${c.id}(${c.stage})`).join(", ") : "none"}`,
+				`pending approval: ${state.pendingApproval ? `${state.pendingApproval.stage} @ ${state.pendingApproval.sha}` : "none"}`,
 				lockLine,
 				"",
-	
 			];
 			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock } };
 		},
 	});
 
-	// --- wf_context_append ---
-	// Fixes a real race: context.md is the shared knowledge cache multiple roles (and
-	// multiple *parallel* engineers) append to via plain edit/write. Two concurrent
-	// read-modify-write edits can clobber each other — previously worked around by asking
-	// engineers to intercom-serialize manually (see wf-engineer SKILL.md history) instead
-	// of fixing it. This tool appends via a single fs.appendFileSync call, which on POSIX
-	// is one atomic write() syscall for reasonably sized entries — no read-modify-write, so
-	// concurrent callers can never lose each other's entries. Same role/CLR checks the
-	// tool_call hook applies to edit/write, reproduced here because custom tools bypass
-	// that hook (it only inspects event.toolName === "write"/"edit").
+	// --- wf_write_artifact (C9: reconcile the divergence — this tool was registered by
+	// some installed copy but absent from this canonical index.ts) ---
 	pi.registerTool({
-		name: "wf_context_append",
-		label: "wf_context_append",
-		description:
-			"Atomically append an entry to context.md (the shared knowledge cache). Safe under concurrent/parallel agents — unlike editing the file directly, this can't clobber another agent's simultaneous append. Any role permitted to write context.md.",
-		parameters: Type.Object({ entry: Type.String() }),
+		name: "wf_write_artifact",
+		label: "wf_write_artifact",
+		description: "Safely writes a workflow artifact to .workflow/<id>/artifacts/. Cannot touch source files.",
+		parameters: Type.Object({
+			filename: Type.String({ description: "artifact filename, e.g. plan.md, research.md" }),
+			content: Type.String(),
+		}),
 		async execute(_id, params) {
+			if (!ARTIFACT_MDS.has(params.filename)) {
+				return deny(`"${params.filename}" is not a recognized workflow artifact (${[...ARTIFACT_MDS].join(", ")})`);
+			}
 			const r = role();
-			const relPath = `.workflow/${workflowId()}/artifacts/context.md`;
-
-			const allow = isPathAllowedForRole(r, relPath);
+			const rel = SHARED_ARTIFACTS.has(params.filename)
+				? `.workflow/shared/artifacts/${params.filename}`
+				: `.workflow/${workflowId()}/artifacts/${params.filename}`;
+			const allow = isPathAllowedForRole(r, rel);
 			if (!allow.ok) return deny(allow.reason ?? "not permitted");
 
-			// Same CLR gate edit/write already gets for context.md (not in the CLR-exempt set).
 			const state = loadState();
 			const clr = loadClr();
 			const gate = clrBlocksStage(clr, state.current);
-			if (gate.blocked) {
+			const isClarifications = params.filename === "clarifications.md";
+			if (gate.blocked && !isClarifications) {
 				return deny(`OPEN CLR(s) block writes: ${gate.ids.join(", ")}. Resolve via wf_clr_resolve before editing.`);
 			}
 
-			const entry = params.entry.trim();
-			if (!entry) return deny("entry must not be empty");
-
-			const abs = artifactPath("context.md");
+			const abs = artifactPath(params.filename);
 			fs.mkdirSync(path.dirname(abs), { recursive: true });
-			// wf_init already stubs context.md into existence, so this is always an append to an
-			// existing file in normal flow — no separate "create with header" branch needed (that
-			// branch would itself race if two callers raced the file into existence).
-			const block = `\n<!-- appended by ${r} @ ${new Date().toISOString()} -->\n${entry}\n`;
-			fs.appendFileSync(abs, block);
-
-			return ok(`appended ${entry.length} chars to context.md`);
+			fs.writeFileSync(abs, params.content);
+			if (params.filename === "architecture.md") {
+				const head = currentGitSha();
+				if (head) stampArchitecture(head);
+			}
+			return ok(`wrote ${params.content.length} chars to ${params.filename}`);
 		},
 	});
+
+	// --- wf_knowledge_put / wf_knowledge_get (P1-1) ---
+	pi.registerTool({
+		name: "wf_knowledge_put",
+		label: "wf_knowledge_put",
+		description: "Store an immutable analysis fragment about a source file so other agents (or future workflow runs) can reuse it instead of re-deriving. scope=general is durable/repo-wide; scope=task is disposable, this workflow only.",
+		parameters: Type.Object({
+			file: Type.String({ description: "repo-relative path of the source file this note is about" }),
+			note: Type.String(),
+			scope: StringEnum(["general", "task"]),
+		}),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const dir = knowledgeDir(params.file, params.scope as "general" | "task");
+			fs.mkdirSync(dir, { recursive: true });
+			let mtime = "";
+			let size = "";
+			try {
+				const st = fs.statSync(path.resolve(repoRoot(), params.file));
+				mtime = String(st.mtimeMs);
+				size = String(st.size);
+			} catch {
+				// source file doesn't exist (yet, or was deleted) — fragment is always stale on read
+			}
+			const frag = `---\nfile: ${params.file}\nrole: ${role()}\nmtime: ${mtime}\nsize: ${size}\nwritten: ${new Date().toISOString()}\n---\n${params.note.trim()}\n`;
+			const name = `${process.pid}-${Date.now()}-${role()}.md`;
+			const tmp = path.join(dir, `.tmp-${name}`);
+			fs.writeFileSync(tmp, frag);
+			fs.renameSync(tmp, path.join(dir, name)); // atomic — immutable fragments never collide
+			return ok(`stored fragment ${name} (scope=${params.scope})`);
+		},
+	});
+	pi.registerTool({
+		name: "wf_knowledge_get",
+		label: "wf_knowledge_get",
+		description: "Retrieve stored analysis fragments about a source file — general (repo-wide) and task (this workflow) scope — filtered to ones still fresh (mtime+size match). Call before reading a source file another agent may already have analyzed.",
+		parameters: Type.Object({ file: Type.String() }),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const { sections, staleCount } = freshFragments(params.file);
+			const staleNote = staleCount ? `\n\n_${staleCount} stale fragment(s) skipped — file changed since last analysis._` : "";
+			const text = sections.length ? `${sections.join("\n\n")}${staleNote}` : `no fragments found for ${params.file}${staleNote}`;
+			return { content: [{ type: "text", text }], details: { ok: true } };
+		},
+	});
+
+	// --- wf_msg_post / wf_msg_poll / wf_bus_digest (P2: agent bus) ---
+	// Replaces `intercom` for subagent<->subagent and subagent<->director coordination:
+	// intercom targets interactive sessions by discoverable name, which dispatched
+	// subagents don't have, and its messages die with the process. The bus is plain
+	// per-role JSONL under .workflow/<id>/bus/, appended via a single appendFileSync call
+	// (same atomicity argument as wf_context_append had) — survives process death, fully
+	// auditable after the run.
+	pi.registerTool({
+		name: "wf_msg_post",
+		label: "wf_msg_post",
+		description: 'Post a message to another role\'s bus, or "all". Survives process death; readable after both sender and recipient exit.',
+		parameters: Type.Object({
+			to: Type.String({ description: 'role name (e.g. "engineer") or "all"' }),
+			body: Type.String(),
+			threadId: Type.Optional(Type.String()),
+		}),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			fs.mkdirSync(busDir(), { recursive: true });
+			const target = params.to.toLowerCase() === "all" ? "all" : params.to.toLowerCase();
+			const msg = {
+				id: crypto.randomBytes(4).toString("hex"),
+				from: role(),
+				to: target,
+				body: params.body,
+				threadId: params.threadId ?? "",
+				ts: new Date().toISOString(),
+			};
+			fs.appendFileSync(busFile(target), `${JSON.stringify(msg)}\n`); // single write() syscall — atomic under concurrent writers
+			return ok(`posted to ${target}: ${msg.id}`);
+		},
+	});
+	pi.registerTool({
+		name: "wf_msg_poll",
+		label: "wf_msg_poll",
+		description: 'Poll messages addressed to caller\'s role or "all", optionally only since an ISO timestamp.',
+		parameters: Type.Object({ since: Type.Optional(Type.String({ description: "ISO timestamp — only messages strictly after this" })) }),
+		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const r = role();
+			let msgs = [...readJsonl(busFile(r)), ...readJsonl(busFile("all"))];
+			msgs.sort((a, b) => (a.ts as string).localeCompare(b.ts as string));
+			if (params.since) msgs = msgs.filter((m) => (m.ts as string) > params.since!);
+			const text = msgs.length ? msgs.map((m) => `[${m.ts}] ${m.from}→${m.to}: ${m.body}`).join("\n") : "no messages";
+			return { content: [{ type: "text", text }], details: { messages: msgs } };
+		},
+	});
+	pi.registerTool({
+		name: "wf_bus_digest",
+		label: "wf_bus_digest",
+		description: "Full bus transcript across every role, oldest first. Director only.",
+		parameters: Type.Object({}),
+		async execute() {
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
+			let files: string[] = [];
+			try {
+				files = fs.readdirSync(busDir()).filter((f) => f.endsWith(".jsonl"));
+			} catch {
+				// no bus activity yet
+			}
+			const msgs = files.flatMap((f) => readJsonl(path.join(busDir(), f)));
+			msgs.sort((a, b) => (a.ts as string).localeCompare(b.ts as string));
+			const text = msgs.length ? msgs.map((m) => `[${m.ts}] ${m.from}→${m.to}: ${m.body}`).join("\n") : "no messages";
+			return { content: [{ type: "text", text }], details: { messages: msgs } };
+		},
+	});
+
+	// --- wf_artifact_summary (P4: director token diet) ---
+	// Director previously read every artifact in full for every poll. This returns only
+	// heading/verdict lines (`## ...`, `verdict:`, `DRAFT — incomplete` markers) — cheap
+	// enough to call after every subagent report. Read the full artifact only on BLOCKED
+	// or immediately before presenting an AWAITING_HUMAN summary.
+	pi.registerTool({
+		name: "wf_artifact_summary",
+		label: "wf_artifact_summary",
+		description: "Return only heading/verdict lines from an artifact (## headings, `verdict:` lines, DRAFT markers) instead of the full text — cheap director polling. Read the full artifact only on BLOCKED or before a human-gate summary.",
+		parameters: Type.Object({ artifact: Type.String({ description: "artifact filename, e.g. review.md" }) }),
+		async execute(_id, params) {
+			const abs = artifactPath(params.artifact);
+			let text: string;
+			try {
+				text = fs.readFileSync(abs, "utf8");
+			} catch {
+				return deny(`no such artifact: ${params.artifact}`);
+			}
+			const lines = text.split("\n").filter((l) => /^#{1,3}\s/.test(l) || /verdict\s*:/i.test(l) || /DRAFT — incomplete/i.test(l));
+			return {
+				content: [{ type: "text", text: lines.length ? lines.join("\n") : "(no heading/verdict lines found — read in full)" }],
+				details: { ok: true },
+			};
+		},
+	});
+}
+
+// ---- knowledge helpers (P1-1) ----
+function sanitizeFilePath(file: string): string {
+	return file
+		.replace(/^\.\/?/, "")
+		.replace(/\.\./g, "_")
+		.replace(/[\\/]/g, "__")
+		.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+function knowledgeDir(file: string, scope: "general" | "task"): string {
+	const base = scope === "general" ? path.join(wfRoot(), "shared", "knowledge") : path.join(wfDir(), "knowledge");
+	return path.join(base, sanitizeFilePath(file));
+}
+
+// Collect fresh (mtime+size still matching the on-disk source) fragments for a file.
+// Shared by wf_knowledge_get and the P1-2 read-interception hook.
+function freshFragments(file: string): { sections: string[]; staleCount: number } {
+	let curMtime = "";
+	let curSize = "";
+	try {
+		const st = fs.statSync(path.resolve(repoRoot(), file));
+		curMtime = String(st.mtimeMs);
+		curSize = String(st.size);
+	} catch {
+		// missing source — everything reads as stale, which is correct
+	}
+	const sections: string[] = [];
+	let staleCount = 0;
+	const scopes: Array<["general" | "task", string]> = [
+		["general", "General (repo-wide)"],
+		["task", "Task-specific (this workflow)"],
+	];
+	for (const [scope, label] of scopes) {
+		const dir = knowledgeDir(file, scope);
+		let files: string[] = [];
+		try {
+			files = fs.readdirSync(dir).filter((f) => f.endsWith(".md") && !f.startsWith(".tmp-")).sort();
+		} catch {
+			// no fragments for this file/scope yet
+		}
+		const fresh: string[] = [];
+		for (const f of files) {
+			const raw = fs.readFileSync(path.join(dir, f), "utf8");
+			const fm = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(raw);
+			if (!fm) continue;
+			const meta: Record<string, string> = {};
+			for (const line of fm[1].split("\n")) {
+				const idx = line.indexOf(":");
+				if (idx === -1) continue;
+				meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+			}
+			if (curMtime && meta.mtime === curMtime && meta.size === curSize) {
+				fresh.push(`### ${meta.role ?? "?"} @ ${meta.written ?? "?"}\n${fm[2].trim()}`);
+			} else {
+				staleCount += 1;
+			}
+		}
+		if (fresh.length) sections.push(`## ${label}\n${fresh.join("\n\n")}`);
+	}
+	return { sections, staleCount };
 }
 
 function nextStage(s: Stage): Stage | null {

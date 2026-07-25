@@ -174,9 +174,7 @@ fs.writeFileSync(".workflow/default/artifacts/research.md", `# research
 - \`src/middleware/logger.ts:requestLogger\` — already logs all routes, no extra wiring needed
 `);
 
-fs.writeFileSync(".workflow/default/artifacts/context.md", `# context cache
-- src/app.ts
-`);
+await call("wf_knowledge_put", { file: "src/app.ts", note: "createApp() mounts all routes; health handler should be added here.", scope: "task" });
 
 const researchSha = gitCommit("research: health endpoint risks + reusables");
 console.log("  research SHA:", researchSha.slice(0, 7));

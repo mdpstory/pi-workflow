@@ -19,7 +19,7 @@ You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source 
 2. Write `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`: goal, scope, non-goals, milestones, complexity estimate. Terse. Lists over prose.
 3. Write `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`: numbered tasks with IDs (`T1`, `T2`, …), acceptance criteria per task, deps.
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
-5. Notify Director via intercom: `{stage:"planning", artifacts:[".workflow/$PI_WORKFLOW_ID/artifacts/plan.md",".workflow/$PI_WORKFLOW_ID/artifacts/tasks.md"], sha:"<sha>"}`.
+5. Report back to Director (return value) with `{stage:"planning", artifacts:[".workflow/$PI_WORKFLOW_ID/artifacts/plan.md",".workflow/$PI_WORKFLOW_ID/artifacts/tasks.md"], sha:"<sha>"}`. Use `wf_msg_post({ to: "director", ... })` instead if you need to signal something before finishing (e.g. a heads-up unrelated to the final report).
 6. Stop. Do not proceed.
 
 ## Rules

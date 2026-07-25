@@ -45,40 +45,25 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 
    This prevents downstream agents (Architect, Engineer) from re-reading the same files.
 
-3. **Call `wf_context_append`** to populate `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` — the shared knowledge cache. This file lives across stages so every agent knows what previous agents already discovered. Use `wf_context_append`, not `write`/`edit` — it's atomic and safe if run alongside other writers.
+3. **Call `wf_knowledge_put`** once per file you actually read, with `scope: "general"` for durable/repo-wide facts (what a file does, its exports — true regardless of this task) and `scope: "task"` for anything specific to the current request. This replaces the old single shared `context.md` file: each note is its own immutable, per-file fragment, so downstream agents can pull exactly the file they need via `wf_knowledge_get` instead of scanning one giant cache.
 
-   ```markdown
-   # shared context
-   _Populated by: scout_
-   _Last updated: <timestamp>_
-
-   ## files explored
-   | path | purpose | key exports (with line) | notes |
-   |------|---------|--------------------------|-------|
-   | `src/foo.ts` | Manages foo operations | `Foo` @L15-34, `createFoo()` @L42-58, `FooConfig` @L8-13 | Uses bar internally |
-   | `src/bar.ts` | Bar utility | `bar()` @L3-9 | Pure function, no side effects |
-
-   ## architecture observations
-   - <high-level pattern you noticed: e.g. "uses event emitter pattern", "all handlers follow same interface">
-   - <dependency graph summary>
-
-   ## key symbols to know
-   | symbol | location | what it is |
-   |--------|----------|------------|
-   | `Foo` | `src/foo.ts:15` | Main class |
-   | `FooConfig` | `src/foo.ts:8` | Config type |
+   ```ts
+   wf_knowledge_put({
+     file: "src/foo.ts",
+     scope: "general",
+     note: "Manages foo operations. Exports `Foo` @L15-34 (main class), `createFoo()` @L42-58, `FooConfig` @L8-13. Uses bar.ts internally.",
+   })
    ```
 
 4. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
-5. Notify Director with `{stage:"research", artifact:".workflow/$PI_WORKFLOW_ID/artifacts/research.md", sha}`.
+5. Report back to Director (return value) with `{stage:"research", artifact:".workflow/$PI_WORKFLOW_ID/artifacts/research.md", sha}`.
 6. Stop.
 
 ## Rules
 
 - Facts + paths. No opinions on plan or design.
 - Cite file paths, symbol names, versions, and **exact line ranges** (`path:startLine-endLine`, e.g. `src/foo.ts:15-34`) for every specific finding — not just the file, and not just a single line. A range without an end forces the next agent to guess where the block stops.
-- **Every file you read MUST appear in both `research.md` (file summaries) AND `context.md` (files explored table).** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
-- Always use `wf_context_append` for `context.md`, never `edit`/`write`.
+- **Every file you read MUST appear in both `research.md` (file summaries) AND a `wf_knowledge_put` call.** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
 - Every symbol, risk, or reusable component you cite MUST include its `path:startLine-endLine` — never a bare filename, never a single line number alone.
 - Be thorough in file summaries. A good summary saves Architect 10+ tool calls per file.
 
