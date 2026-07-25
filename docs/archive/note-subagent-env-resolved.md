@@ -1,4 +1,13 @@
-# NOTE: subagent env passthrough (blocker for pi-workflow) — TODO, owner: user
+# NOTE: subagent env passthrough (blocker for pi-workflow) — RESOLVED
+
+Resolved by the pi-subagent merge (`f1a3adb`): `subagent/run.ts` implements
+`buildChildEnv` / `RESERVED_ENV_KEYS` and threads `env` into the spawn call
+(`subagent/run.ts:328`). The `env` param exists on `single`/`parallel`/`chain`
+modes. Director dispatch can now use
+`subagent({ agent: "engineer", env: { PI_WORKFLOW_ROLE: "engineer", PI_WORKFLOW_ID }, ... })`
+as described below, no `PI_WORKFLOW_ROLE=` text-prefix workaround needed.
+
+Kept below for historical context (original problem statement + design).
 
 ## Problem
 
