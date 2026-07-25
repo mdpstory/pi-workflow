@@ -58,6 +58,24 @@ export interface SubagentDetails {
 
 export type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
+const RATE_LIMIT_PATTERNS = [
+	/\b429\b/,
+	/rate.?limit/i,
+	/too many requests/i,
+	/quota exceeded/i,
+	/request limit/i,
+	/overloaded/i,
+];
+
+/**
+ * Detect whether a subagent result indicates a rate-limit error.
+ * Checks both the structured errorMessage and raw stderr.
+ */
+export function detectRateLimit(result: SingleResult): boolean {
+	const text = [result.errorMessage, result.stderr].filter(Boolean).join(" ");
+	return RATE_LIMIT_PATTERNS.some((p) => p.test(text));
+}
+
 export function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -232,6 +250,8 @@ export async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	/** Parent's model — used as fallback when subagent model is rate-limited. */
+	parentModel: string | undefined,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -265,30 +285,12 @@ export async function runSingleAgent(
 	const childEnv = depthCheck.env;
 
 	const selectedModel = overrideModel || agent.model;
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	if (selectedModel) args.push("--model", selectedModel);
-	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
-	let tmpPromptDir: string | null = null;
-	let tmpPromptPath: string | null = null;
-
-	const currentResult: SingleResult = {
-		agent: agentName,
-		agentSource: agent.source,
-		task,
-		exitCode: 0,
-		messages: [],
-		stderr: "",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: selectedModel,
-		step,
-	};
-
-	const emitUpdate = () => {
+	const emitUpdate = (result: SingleResult) => {
 		if (onUpdate) {
 			onUpdate({
-				content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
-				details: makeDetails([currentResult]),
+				content: [{ type: "text", text: getFinalOutput(result.messages) || "(running...)" }],
+				details: makeDetails([result]),
 			});
 		}
 	};
@@ -297,29 +299,52 @@ export async function runSingleAgent(
 	// don't hammer the terminal renderer while still feeling "live".
 	const LIVE_THROTTLE_MS = 80;
 	let lastLiveEmit = 0;
-	const emitLiveUpdate = () => {
+	const emitLiveUpdate = (result: SingleResult) => {
 		const now = Date.now();
 		if (now - lastLiveEmit < LIVE_THROTTLE_MS) return;
 		lastLiveEmit = now;
-		emitUpdate();
+		emitUpdate(result);
 	};
 
-	try {
+	/**
+	 * Spawn a child pi process with the given model and return the result.
+	 * Extracted so we can retry with a different model on rate-limit.
+	 */
+	const spawnWithModel = async (model: string | undefined): Promise<SingleResult> => {
+		const args: string[] = ["--mode", "json", "-p", "--no-session"];
+		if (model) args.push("--model", model);
+		if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+
+		const result: SingleResult = {
+			agent: agentName,
+			agentSource: agent.source,
+			task,
+			exitCode: 0,
+			messages: [],
+			stderr: "",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+			model,
+			step,
+		};
+
 		const toolsLine = agent.tools?.length
 			? `You only have access to these tools: ${agent.tools.join(", ")}. Do NOT attempt to call any other tool — the call will fail.`
 			: "";
 		const fullPrompt = [agent.systemPrompt.trim(), toolsLine].filter(Boolean).join("\n\n");
+		let localTmpPromptDir: string | null = null;
+		let localTmpPromptPath: string | null = null;
 		if (fullPrompt) {
 			const tmp = await writePromptToTempFile(agent.name, fullPrompt);
-			tmpPromptDir = tmp.dir;
-			tmpPromptPath = tmp.filePath;
-			args.push("--append-system-prompt", tmpPromptPath);
+			localTmpPromptDir = tmp.dir;
+			localTmpPromptPath = tmp.filePath;
+			args.push("--append-system-prompt", localTmpPromptPath);
 		}
 
 		args.push(`Task: ${task}`);
 		let wasAborted = false;
 
-		const exitCode = await new Promise<number>((resolve) => {
+		try {
+			const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: cwd ?? defaultCwd,
@@ -343,35 +368,35 @@ export async function runSingleAgent(
 					switch (ev.type) {
 						case "text_start":
 						case "thinking_start":
-							currentResult.liveText = "";
-							currentResult.liveToolCall = undefined;
+							result.liveText = "";
+							result.liveToolCall = undefined;
 							break;
 						case "text_delta":
 						case "thinking_delta":
-							currentResult.liveText = (currentResult.liveText ?? "") + (ev.delta ?? "");
-							emitLiveUpdate();
+							result.liveText = (result.liveText ?? "") + (ev.delta ?? "");
+							emitLiveUpdate(result);
 							break;
 						case "text_end":
 						case "thinking_end":
-							currentResult.liveText = undefined;
+							result.liveText = undefined;
 							break;
 						case "toolcall_start": {
 							const partialItem = ev.partial?.content?.[ev.contentIndex];
-							if (!currentResult.liveToolCall) {
-								currentResult.liveToolCall = { name: partialItem?.name ?? "", rawArgs: "" };
+							if (!result.liveToolCall) {
+								result.liveToolCall = { name: partialItem?.name ?? "", rawArgs: "" };
 							}
-							currentResult.liveText = undefined;
+							result.liveText = undefined;
 							break;
 						}
 						case "toolcall_delta": {
-							if (currentResult.liveToolCall) {
-								currentResult.liveToolCall.rawArgs += ev.delta ?? "";
-								emitLiveUpdate();
+							if (result.liveToolCall) {
+								result.liveToolCall.rawArgs += ev.delta ?? "";
+								emitLiveUpdate(result);
 							}
 							break;
 						}
 						case "toolcall_end":
-							currentResult.liveToolCall = undefined;
+							result.liveToolCall = undefined;
 							break;
 					}
 					return;
@@ -379,31 +404,31 @@ export async function runSingleAgent(
 
 				if (event.type === "message_end" && event.message) {
 					const msg = event.message as Message;
-					currentResult.messages.push(msg);
-					currentResult.liveText = undefined;
-					currentResult.liveToolCall = undefined;
+					result.messages.push(msg);
+					result.liveText = undefined;
+					result.liveToolCall = undefined;
 
 					if (msg.role === "assistant") {
-						currentResult.usage.turns++;
+						result.usage.turns++;
 						const usage = msg.usage;
 						if (usage) {
-							currentResult.usage.input += usage.input || 0;
-							currentResult.usage.output += usage.output || 0;
-							currentResult.usage.cacheRead += usage.cacheRead || 0;
-							currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-							currentResult.usage.cost += usage.cost?.total || 0;
-							currentResult.usage.contextTokens = usage.totalTokens || 0;
+							result.usage.input += usage.input || 0;
+							result.usage.output += usage.output || 0;
+							result.usage.cacheRead += usage.cacheRead || 0;
+							result.usage.cacheWrite += usage.cacheWrite || 0;
+							result.usage.cost += usage.cost?.total || 0;
+							result.usage.contextTokens = usage.totalTokens || 0;
 						}
-						if (!currentResult.model && msg.model) currentResult.model = msg.model;
-						if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
+						if (!result.model && msg.model) result.model = msg.model;
+						if (msg.stopReason) result.stopReason = msg.stopReason;
+						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
 					}
-					emitUpdate();
+					emitUpdate(result);
 				}
 
 				if (event.type === "tool_result_end" && event.message) {
-					currentResult.messages.push(event.message as Message);
-					emitUpdate();
+					result.messages.push(event.message as Message);
+					emitUpdate(result);
 				}
 			};
 
@@ -415,7 +440,7 @@ export async function runSingleAgent(
 			});
 
 			proc.stderr.on("data", (data) => {
-				currentResult.stderr += data.toString();
+				result.stderr += data.toString();
 			});
 
 			proc.on("close", (code) => {
@@ -440,21 +465,36 @@ export async function runSingleAgent(
 			}
 		});
 
-		currentResult.exitCode = exitCode;
-		if (wasAborted) throw new Error("Subagent was aborted");
-		return currentResult;
-	} finally {
-		if (tmpPromptPath)
-			try {
-				fs.unlinkSync(tmpPromptPath);
-			} catch {
-				/* ignore */
-			}
-		if (tmpPromptDir)
-			try {
-				fs.rmdirSync(tmpPromptDir);
-			} catch {
-				/* ignore */
-			}
+			result.exitCode = exitCode;
+			if (wasAborted) throw new Error("Subagent was aborted");
+			return result;
+		} finally {
+			if (localTmpPromptPath)
+				try {
+					fs.unlinkSync(localTmpPromptPath);
+				} catch {
+					/* ignore */
+				}
+			if (localTmpPromptDir)
+				try {
+					fs.rmdirSync(localTmpPromptDir);
+				} catch {
+					/* ignore */
+				}
+		}
+	};
+
+	let result = await spawnWithModel(selectedModel);
+
+	// Rate-limit fallback: if the chosen model was rate-limited and we have
+	// a different parent model available, retry once with that model.
+	if (
+		detectRateLimit(result) &&
+		parentModel &&
+		parentModel !== selectedModel
+	) {
+		result = await spawnWithModel(parentModel);
 	}
+
+	return result;
 }

@@ -246,6 +246,7 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						process.env.PI_MODEL,
 					);
 					results.push(result);
 
@@ -326,6 +327,7 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 							}
 						},
 						makeDetails("parallel"),
+						process.env.PI_MODEL,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -364,6 +366,7 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					process.env.PI_MODEL,
 				);
 				const isError = isFailedResult(result);
 				if (isError) {
