@@ -17,6 +17,10 @@ import { clrBlocksStage, isStubContent, loadClr, loadState, saveState } from "..
 // The stage the user is actually being asked to approve: the next one that will really run.
 // Stages configured in skipStages (or already marked done) are fast-forwarded past, otherwise
 // wf_stage_start auto-skips them and the pending gate is left pointing at a dead stage.
+function allSkippedSoFar(a: Stage[], b: Stage[]): string {
+	return [...a, ...b].join(", ") || "(none)";
+}
+
 function nextGateStage(state: ReturnType<typeof loadState>, from: Stage): Stage | null {
 	const skip = skipStagesSet();
 	let n = nextStage(from);
@@ -90,7 +94,12 @@ export function registerStageTools(pi: ExtensionAPI) {
 				}
 				break;
 			}
-			if (cur) {
+			// The skip chain can land on a DIFFERENT stage than the one the user pre-approved
+			// (architecture freshness is decided here, not at wf_stage_complete time). If that
+			// landing stage itself requires pre-approval, gate it now — otherwise auto-skip would
+			// silently start a stage the user never approved.
+			const gateOnLanding = !!cur && cur !== target && requirePreApprovalSet().has(cur);
+			if (cur && !gateOnLanding) {
 				state.current = cur;
 				state.stages[cur].status = "in-progress";
 			} else {
@@ -108,6 +117,23 @@ export function registerStageTools(pi: ExtensionAPI) {
 					path.join(artifactsDir(), "decisions.md"),
 					`\n## auto-skip (architecture.md unchanged since last stamp)\n- Skipped: ${freshChain.join(", ")}\n`,
 				);
+			}
+			if (cur && gateOnLanding) {
+				const from = STAGES[stageIndex(cur) - 1];
+				const summary = [
+					`## auto-skipped: ${allSkippedSoFar(skippedChain, freshChain)}`,
+					`## next stage: ${cur}`,
+					`- role: ${ROLE_FOR_STAGE[cur]}`,
+					`- expected artifacts: ${ARTIFACT_FOR_STAGE[cur].join(", ") || "source code"}`,
+					`## question`,
+					`- approve starting ${cur}? call wf_continue(stage="${cur}", verdict="approve"|"reject", note?)`,
+				].join("\n");
+				state.pendingPreApproval = { nextStage: cur, completedStage: from, sha: state.stages[from]?.sha ?? "auto-skip", summary };
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `PRE_APPROVAL_REQUIRED\n${summary}` }],
+					details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage: from, nextStage: cur },
+				};
 			}
 			acquireOrCheckLock(); // refresh lock; also self-reclaims a stale one
 
