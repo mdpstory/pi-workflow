@@ -209,6 +209,51 @@ a further bump escalates to `HUMAN` and stops.
   hard-blocked for every role, so two workflows in the same repo never race on
   each other's state, even without a lock.
 
+## `subagent` tool
+
+Merged in from the former standalone `pi-subagent` package (now retired — see
+"History" below). Delegates a task to a separate `pi` subprocess with its own
+context window, system prompt, and tool/model config.
+
+```
+subagent/
+├── agents.ts   # discovery: ~/.pi/agent/agents/*.md, .pi/agents/*.md
+├── format.ts   # display formatting (tokens, tool calls, diffs, live blocks)
+├── run.ts      # process spawn/env lifecycle, buildChildEnv, RESERVED_ENV_KEYS
+└── tool.ts     # the registered `subagent` tool (single/parallel/chain modes)
+```
+
+**Modes** — `{ agent, task }` (single), `{ tasks: [...] }` (parallel, max 8, 4
+concurrent), `{ chain: [...] }` (sequential, `{previous}` placeholder).
+
+**Env passthrough**: `subagent({ agent, env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID }, task })`
+is how a director gives a dispatched subagent its workflow identity — see
+"Role model" above. `RESERVED_ENV_KEYS` in `run.ts` strips any caller-supplied
+attempt to set these directly; only the tool's own `env` param can set them,
+and a depth ceiling prevents runaway recursive dispatch.
+
+**Agent personas**: `agents/*.md` (architect, documenter, engineer, planner, qa,
+reviewer, scout, worker — director intentionally excluded, see the comment in
+`agents/director.md`) ship in this package and are symlinked individually from
+`~/.pi/agent/agents/*.md` for discovery. `prompts/*.md` (`/implement`,
+`/scout-and-plan`, `/implement-and-review`) ship via the `"prompts"` field in
+`package.json`.
+
+**Security model**: only user-level agents (`~/.pi/agent/agents/`) load by
+default. Project-local agents (`.pi/agents/*.md`) are repo-controlled prompts
+and require `agentScope: "both"` or `"project"` — only for trusted repos —
+and prompt for confirmation unless `confirmProjectAgents: false`.
+
+### History
+
+Previously a separate package (`git:github.com/mdpstory/pi-subagent`). Merged
+into this repo so the workflow tools and the delegation mechanism they depend
+on (the DELEGATE hint in `wf_stage_start` calls `subagent({ agent: "<role>", ... })`)
+ship as one installable unit instead of two packages that had to be kept in
+sync by hand. `pi-subagent`'s own `wf_write_artifact` was dropped in the merge
+in favor of this package's (role + CLR gated, shared-artifact routing) — see
+`decisions.md` history / the merge commit for details.
+
 ## Testing
 
 ```bash
