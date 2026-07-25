@@ -8,7 +8,7 @@ import { currentGitSha, isArchitectureFresh, stampArchitecture } from "../lib/ar
 import { resetToolCalls, TOOL_CAP } from "../lib/ceiling.ts";
 import { requireApprovalSet, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
 import { ARTIFACT_FOR_STAGE, nextStage, ROLE_FOR_STAGE, STAGES, stageIndex, type Stage } from "../lib/constants.ts";
-import { requireDirector, role, workflowId } from "../lib/identity.ts";
+import { requireDirector, requireHumanGate, workflowId } from "../lib/identity.ts";
 import { acquireOrCheckLock } from "../lib/lock.ts";
 import { artifactPath, artifactsDir } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
@@ -272,7 +272,7 @@ export function registerStageTools(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_approve",
 		label: "wf_approve",
-		description: "Approve or reject a stage awaiting the human gate (see requireApproval config). Callable ONLY by an unassigned (human) session — never by director or any agent role.",
+		description: "Approve or reject a stage awaiting the human gate (see requireApproval config). Callable only by the human: an unassigned session, or the director session relaying an explicit human verdict. Never by a dispatched agent role.",
 		parameters: Type.Object({
 			stage: StringEnum([...STAGES]),
 			sha: Type.String(),
@@ -280,7 +280,8 @@ export function registerStageTools(pi: ExtensionAPI) {
 			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
 		}),
 		async execute(_id, params) {
-			if (role() !== "unassigned") return deny("wf_approve is human-only — no claimed/env role may call it");
+			const blocked = requireHumanGate("wf_approve");
+			if (blocked) return deny(blocked.msg);
 			const state = loadState();
 			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
 				return deny(`no matching pending approval for stage=${params.stage} sha=${params.sha}`);
@@ -336,14 +337,15 @@ export function registerStageTools(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_continue",
 		label: "wf_continue",
-		description: "Approve or reject starting the next stage after pre-approval gate. Callable ONLY by an unassigned (human) session.",
+		description: "Approve or reject starting the next stage after pre-approval gate. Callable only by the human: an unassigned session, or the director session relaying an explicit human verdict.",
 		parameters: Type.Object({
 			stage: StringEnum([...STAGES]),
 			verdict: StringEnum(["approve", "reject"]),
 			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
 		}),
 		async execute(_id, params) {
-			if (role() !== "unassigned") return deny("wf_continue is human-only — no claimed/env role may call it");
+			const blocked = requireHumanGate("wf_continue");
+			if (blocked) return deny(blocked.msg);
 			const state = loadState();
 			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {
 				return deny(`no matching pre-approval for nextStage=${params.stage}`);

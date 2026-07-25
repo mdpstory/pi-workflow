@@ -9,7 +9,7 @@ Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout,
 
 **Step 0, before anything else:** call `wf_claim({ role: "director" })`. This is what makes this session the director — loading this skill alone does not. (Skip this call only if `PI_WORKFLOW_ROLE=director` is already set in your env.)
 
-**Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/` — but prefer `wf_artifact_summary` for routine polling (headings/verdict lines only); only read an artifact in full on BLOCKED or before presenting an AWAITING_HUMAN summary to the user. **Writes:** `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md` (task-breakdown reconciliation only), `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions).
+**Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/` — but prefer `wf_artifact_summary` for routine polling (headings/verdict lines only); only read an artifact in full on BLOCKED or before presenting an AWAITING_HUMAN summary to the user. **Writes:** `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions). No stage artifact — ever.
 
 **Forbidden, extension-enforced (hard-blocked by the write-gate — every role's allowlist, director's included, is now code-enforced, not convention):** `.workflow/shared/artifacts/architecture.md` (delegate to Architect), `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `research.md`, `review.md`, `test-report.md`, `changelog.md`, and all source code. There is no more "convention-only, discipline required" category — every path not in your allowlist is a hard block.
 
@@ -63,6 +63,23 @@ subagent({
 })
 ```
 
+## Artifact ownership (who to dispatch for a fix)
+
+When an artifact must be written or revised, dispatch the role that OWNS it. Never dispatch
+`engineer` for artifact edits — engineer may only write source code + clarifications.md.
+
+| artifact | owner subagent |
+|---|---|
+| plan.md | planner |
+| tasks.md | planner |
+| research.md | scout |
+| architecture.md | architect |
+| review.md | reviewer |
+| test-report.md | qa |
+| changelog.md, docs/, README.md | documenter |
+| decisions.md, clarifications.md | director |
+| source code | engineer |
+
 ## Per-stage loop
 
 ```
@@ -72,7 +89,8 @@ wf_stage_start <stage>
         and do NOT call wf_stage_complete for those stages — they are already marked
         "done" by wf_stage_start itself. Just continue reading for the next actionable stage.
       • response contains "PRE_APPROVAL_REQUIRED" → STOP. Do not spawn subagent. Present
-        the summary to the user verbatim and wait for user to call wf_continue().
+        the summary to the user verbatim, wait for the user's verdict in chat, then relay
+        it via wf_continue(stage, verdict).
       • response contains "stage started" → spawn a NEW subagent (agent: <role>,
         env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID } — do NOT recruit existing generic/idle
         sessions via intercom for role work)
@@ -81,12 +99,11 @@ wf_stage_start <stage>
             only if summary looks wrong or you're about to call wf_stage_complete
           → wf_stage_complete <stage> <sha>
               APPROVED → wf_stage_start <next>
-              PRE_APPROVAL_REQUIRED → STOP. Present the summary to the user verbatim and
-                wait for user to call wf_continue(). Do NOT call wf_stage_start for the
-                next stage until user approves.
-              AWAITING_HUMAN → stop, present the summary to the user verbatim, wait —
-                only the user (unassigned session) can call wf_approve; you cannot approve
-                your own stage even if you're confident
+              PRE_APPROVAL_REQUIRED → STOP. Present the summary to the user verbatim, wait
+                for the user's verdict in chat, then relay it via wf_continue(). Do NOT
+                call wf_stage_start for the next stage until the user approves.
+              AWAITING_HUMAN → stop, present the summary to the user verbatim, wait for the
+                user's verdict in chat, then relay it via wf_approve(). Never decide it yourself.
               BLOCKED  → fix listed errors (usually reassign or resolve CLR), retry
 ```
 
@@ -102,7 +119,7 @@ Planning and Research run sequentially in order (`planning` then `research`).
 
 ## Task Breakdown
 
-Director synthesis, no peer. Reconcile `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md` + `.workflow/$PI_WORKFLOW_ID/artifacts/research.md` into `.workflow/$PI_WORKFLOW_ID/artifacts/tasks.md`. Log every edit in `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md`. Then `wf_stage_complete task-breakdown <sha>`.
+Dispatch a Planner subagent (`env: { PI_WORKFLOW_ROLE: "planner", PI_WORKFLOW_ID }`) to reconcile `plan.md` + `research.md` into `tasks.md`. Director does NOT write tasks.md — the extension blocks it. Log routing decisions in `decisions.md`. On Planner's report → `wf_stage_complete task-breakdown <sha>`.
 
 ## Implementation (Parallel Engineers)
 
@@ -132,11 +149,11 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
 
 ## Human approval gate (post-stage)
 
-If a stage is listed in `requireApproval` (project or global `pi-workflow.json`), `wf_stage_complete` will NOT mark it done — it returns `AWAITING_HUMAN` with a summary and stores it as the pending approval. Present that summary to the user verbatim and stop. Only a human (unassigned) session can call `wf_approve(stage, sha, verdict, note?)` — you (director) cannot self-approve even if the checklist looks clean to you. On `reject`, the stage resets to in-progress with the human's note appended to `decisions.md`; re-dispatch the role subagent with that note as the correction brief.
+If a stage is listed in `requireApproval` (project or global `pi-workflow.json`), `wf_stage_complete` will NOT mark it done — it returns `AWAITING_HUMAN` with a summary and stores it as the pending approval. Present that summary to the user verbatim and stop. Wait for the user's explicit verdict in chat, then relay it by calling `wf_approve(stage, sha, verdict, note?)` yourself (director is allowed to call it purely as a relay). Never invent the verdict — no user message, no call. On `reject`, the stage resets to in-progress with the human's note appended to `decisions.md`; re-dispatch the role subagent with that note as the correction brief.
 
 ## Pre-approval gate (before next stage)
 
-If the NEXT stage is listed in `requirePreApproval` (project or global `pi-workflow.json`), `wf_stage_complete` returns `PRE_APPROVAL_REQUIRED` with a summary of what was completed and what's coming next. Present that summary to the user verbatim and stop. Only a human (unassigned) session can call `wf_continue(stage, verdict, note?)`. On `reject`, the completed stage resets to in-progress. On `approve`, the director may proceed to `wf_stage_start` for the next stage.
+If the NEXT stage is listed in `requirePreApproval` (project or global `pi-workflow.json`), `wf_stage_complete` returns `PRE_APPROVAL_REQUIRED` with a summary of what was completed and what's coming next. Present that summary to the user verbatim and stop. Wait for the user's explicit verdict in chat, then relay it by calling `wf_continue(stage, verdict, note?)` yourself. Never invent the verdict — no user message, no call. On `reject`, the completed stage resets to in-progress. On `approve`, the director may proceed to `wf_stage_start` for the next stage.
 
 ## CLRs
 

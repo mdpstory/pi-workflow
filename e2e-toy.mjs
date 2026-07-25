@@ -55,7 +55,7 @@ const jiti = createJiti(import.meta.url, {
 		"@earendil-works/pi-coding-agent": path.join(sandbox, "__stub_pi_agent.mjs"),
 	},
 });
-const extModule = await jiti.import("/home/vivo/Notes/.pi/extensions/pi-workflow/index.ts");
+const extModule = await jiti.import(new URL("./index.ts", import.meta.url).pathname);
 const factory = extModule.default || extModule;
 factory(api);
 console.log("tools registered:", [...tools.keys()].join(", "));
@@ -192,10 +192,13 @@ assert(rc.details.ok === true, "research APPROVED");
 rc = await call("wf_stage_start", { stage: "task-breakdown" });
 assert(rc.details.ok === true, "task-breakdown started");
 
-// Director reconciles plan.md + research.md → updates tasks.md
+// Planner reconciles plan.md + research.md → updates tasks.md (director is blocked)
 setRole("director");
 h = await hook("write", { path: ".workflow/default/artifacts/tasks.md" });
-assert(!h?.block, "director may write tasks.md");
+assert(h?.block, "director may NOT write tasks.md");
+setRole("planner");
+h = await hook("write", { path: ".workflow/default/artifacts/tasks.md" });
+assert(!h?.block, "planner may write tasks.md");
 
 fs.writeFileSync(".workflow/default/artifacts/tasks.md", `# tasks (reconciled)
 
@@ -207,6 +210,7 @@ fs.writeFileSync(".workflow/default/artifacts/tasks.md", `# tasks (reconciled)
 `);
 
 // Director logs reconciliation decision
+setRole("director");
 h = await hook("write", { path: ".workflow/default/artifacts/decisions.md" });
 assert(!h?.block, "director may write decisions.md");
 fs.appendFileSync(".workflow/default/artifacts/decisions.md", `

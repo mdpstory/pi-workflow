@@ -15,7 +15,7 @@ export type Stage = (typeof STAGES)[number];
 export const ARTIFACT_FOR_STAGE: Record<Stage, string[]> = {
 	planning: ["plan.md", "tasks.md"],
 	research: ["research.md"],
-	"task-breakdown": ["tasks.md"], // director may edit
+	"task-breakdown": ["tasks.md"], // written by planner, never by director
 	architecture: ["architecture.md"],
 	implementation: [], // source code; knowledge fragments, not an artifact
 	review: ["review.md"],
@@ -46,7 +46,9 @@ export const ROLE_ALLOW: Record<string, RegExp[]> = {
 	// actually allowed to write directly — must NOT be a wildcard, or director could write
 	// plan.md/research.md/review.md/test-report.md/changelog.md, which are supposed to be
 	// hard-blocked (owned by Planner/Scout/Reviewer/QA/Documenter respectively).
-	director: [/^artifacts\/decisions\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
+	// Director writes NO stage artifact — only rulings + CLR resolutions. tasks.md belongs to
+	// the planner (task-breakdown stage is dispatched, not self-served).
+	director: [/^artifacts\/decisions\.md$/, /^artifacts\/clarifications\.md$/],
 	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
 	scout: [/^artifacts\/research\.md$/, /^artifacts\/clarifications\.md$/],
 	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/clarifications\.md$/],

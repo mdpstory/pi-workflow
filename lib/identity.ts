@@ -90,6 +90,15 @@ export function role(): string {
 export function workflowActive(): boolean {
 	return role() !== "unassigned";
 }
+// Human gate (wf_approve / wf_continue): the human talks *through* the director session,
+// which has no way to hand the human a tool call of their own. So the gate accepts either an
+// unassigned session or the director session (relaying an explicit human verdict). Every
+// dispatched subagent role is still hard-blocked — they can never approve their own work.
+export function requireHumanGate(tool: string): { ok: false; msg: string } | null {
+	const r = role();
+	if (r === "unassigned" || r === "director") return null;
+	return { ok: false, msg: `${tool} is human-only — role "${r}" may not call it` };
+}
 export function requireDirector(): { ok: false; msg: string } | null {
 	const r = role();
 	if (r === "unassigned") return { ok: false, msg: "no role claimed — load skill wf-director or set PI_WORKFLOW_ROLE" };

@@ -57,16 +57,16 @@ Three states, resolved fresh on every call:
 
 Once any role exists (director included), the write/edit hook and the 50-call
 ceiling activate uniformly. Director's own allowlist
-(`decisions.md`/`tasks.md`/`clarifications.md` only — no source, no
-`architecture.md`, no other artifacts) is code-enforced exactly like every other
+(`decisions.md`/`clarifications.md` only — no source, no stage artifact at all,
+`tasks.md` included) is code-enforced exactly like every other
 role, not left to skill-file discipline.
 
-### `wf_approve` is human-only
+### `wf_approve` / `wf_continue` are human-gated
 
-Refuses to run for any claimed/env role, director included — only an
-`unassigned` session may call it. A director cannot rubber-stamp its own
-approval-required stage by unsetting its env var either, since at that point
-it's no longer the director and can't call `wf_stage_complete`.
+Refuse to run for any dispatched agent role. Callable by an `unassigned` session,
+or by the director session acting purely as a relay for the user's explicit verdict
+— the director has no other channel to hand the human a tool call, so without the
+relay the pre-approval gate deadlocks. Skill rule: no user message, no call.
 
 ## Config
 
