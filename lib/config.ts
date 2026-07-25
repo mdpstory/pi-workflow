@@ -12,6 +12,7 @@ import { readJson } from "./io.ts";
 export interface WfConfig {
 	skipStages?: string[];
 	requireApproval?: string[];
+	requirePreApproval?: string[]; // stages that need user approval BEFORE next stage starts
 	interceptReads?: boolean; // P1-2: substitute fresh knowledge fragments for full read() bodies
 }
 export function loadConfig(): WfConfig {
@@ -19,7 +20,7 @@ export function loadConfig(): WfConfig {
 	const projectPath = path.join(repoRoot(), ".pi", "pi-workflow.json");
 	const g = readJson<WfConfig>(globalPath, {});
 	const p = readJson<WfConfig>(projectPath, {});
-	return { skipStages: p.skipStages ?? g.skipStages, requireApproval: p.requireApproval ?? g.requireApproval, interceptReads: p.interceptReads ?? g.interceptReads };
+	return { skipStages: p.skipStages ?? g.skipStages, requireApproval: p.requireApproval ?? g.requireApproval, requirePreApproval: p.requirePreApproval ?? g.requirePreApproval, interceptReads: p.interceptReads ?? g.interceptReads };
 }
 
 // Stages to auto-skip by default, via skipStages in .pi/pi-workflow.json (or
@@ -31,5 +32,9 @@ export function skipStagesSet(): Set<Stage> {
 }
 export function requireApprovalSet(): Set<Stage> {
 	const names = (loadConfig().requireApproval ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
+}
+export function requirePreApprovalSet(): Set<Stage> {
+	const names = (loadConfig().requirePreApproval ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
 	return new Set(names.filter((n): n is Stage => (STAGES as readonly string[]).includes(n)));
 }

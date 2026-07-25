@@ -6,7 +6,7 @@ import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentGitSha, isArchitectureFresh, stampArchitecture } from "../lib/architecture.ts";
 import { resetToolCalls, TOOL_CAP } from "../lib/ceiling.ts";
-import { requireApprovalSet, skipStagesSet } from "../lib/config.ts";
+import { requireApprovalSet, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
 import { ARTIFACT_FOR_STAGE, nextStage, ROLE_FOR_STAGE, STAGES, stageIndex, type Stage } from "../lib/constants.ts";
 import { requireDirector, role, workflowId } from "../lib/identity.ts";
 import { acquireOrCheckLock } from "../lib/lock.ts";
@@ -26,6 +26,10 @@ export function registerStageTools(pi: ExtensionAPI) {
 			const state = loadState();
 			const target = params.stage as Stage;
 			const idx = stageIndex(target);
+			// Block if pre-approval pending for previous stage
+			if (state.pendingPreApproval) {
+				return deny(`PRE_APPROVAL_REQUIRED: stage "${state.pendingPreApproval.completedStage}" done — user must approve before starting "${target}". User: call wf_continue(stage="${target}", verdict="approve"|"reject", note?)`);
+			}
 			if (idx > 0) {
 				const prevOk = state.stages[STAGES[idx - 1]].status === "done";
 				if (!prevOk) {
@@ -231,7 +235,32 @@ export function registerStageTools(pi: ExtensionAPI) {
 			}
 			state.stages[stage].status = "done";
 			state.stages[stage].sha = sha;
-			state.current = nextStage(stage);
+
+			// --- P4: pre-approval gate ---
+			// After marking stage done, check if NEXT stage needs user approval before starting.
+			const nxt = nextStage(stage);
+			if (nxt && requirePreApprovalSet().has(nxt)) {
+				const artifactList = ARTIFACT_FOR_STAGE[stage].join(", ") || "source code";
+				const summary = [
+					`## completed: ${stage}`,
+					`- artifact(s): ${artifactList}`,
+					`- sha: ${sha.slice(0, 7)}`,
+					`## next stage: ${nxt}`,
+					`- role: ${ROLE_FOR_STAGE[nxt]}`,
+					`- expected artifacts: ${ARTIFACT_FOR_STAGE[nxt].join(", ") || "source code"}`,
+					`## question`,
+					`- approve starting ${nxt}? call wf_continue(stage="${nxt}", verdict="approve"|"reject", note?)`,
+				].join("\n");
+				state.pendingPreApproval = { nextStage: nxt, completedStage: stage, sha, summary };
+				state.current = null; // no stage in-progress while awaiting pre-approval
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `PRE_APPROVAL_REQUIRED\n${summary}` }],
+					details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage, nextStage: nxt, sha },
+				};
+			}
+
+			state.current = nxt;
 			saveState(state);
 			return {
 				content: [{ type: "text", text: `APPROVED ${stage} @ ${sha.slice(0, 7)}` }],
@@ -272,10 +301,71 @@ export function registerStageTools(pi: ExtensionAPI) {
 			}
 			state.stages[params.stage as Stage].status = "done";
 			state.stages[params.stage as Stage].sha = params.sha;
-			state.current = nextStage(params.stage as Stage);
+
+			// Check pre-approval for next stage
+			const nxt = nextStage(params.stage as Stage);
+			if (nxt && requirePreApprovalSet().has(nxt)) {
+				const artifactList = ARTIFACT_FOR_STAGE[params.stage as Stage].join(", ") || "source code";
+				const summary = [
+					`## completed: ${params.stage}`,
+					`- artifact(s): ${artifactList}`,
+					`- sha: ${params.sha.slice(0, 7)}`,
+					`## next stage: ${nxt}`,
+					`- role: ${ROLE_FOR_STAGE[nxt]}`,
+					`- expected artifacts: ${ARTIFACT_FOR_STAGE[nxt].join(", ") || "source code"}`,
+					`## question`,
+					`- approve starting ${nxt}? call wf_continue(stage="${nxt}", verdict="approve"|"reject", note?)`,
+				].join("\n");
+				state.pendingPreApproval = { nextStage: nxt, completedStage: params.stage as Stage, sha: params.sha, summary };
+				state.current = null;
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `PRE_APPROVAL_REQUIRED\n${summary}` }],
+					details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage: params.stage, nextStage: nxt, sha: params.sha },
+				};
+			}
+
+			state.current = nxt;
 			state.pendingApproval = null;
 			saveState(state);
 			return ok(`APPROVED (human) ${params.stage} @ ${params.sha.slice(0, 7)}`);
+		},
+	});
+
+	// --- wf_continue: user approves/rejects pre-approval for next stage ---
+	pi.registerTool({
+		name: "wf_continue",
+		label: "wf_continue",
+		description: "Approve or reject starting the next stage after pre-approval gate. Callable ONLY by an unassigned (human) session.",
+		parameters: Type.Object({
+			stage: StringEnum([...STAGES]),
+			verdict: StringEnum(["approve", "reject"]),
+			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
+		}),
+		async execute(_id, params) {
+			if (role() !== "unassigned") return deny("wf_continue is human-only — no claimed/env role may call it");
+			const state = loadState();
+			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {
+				return deny(`no matching pre-approval for nextStage=${params.stage}`);
+			}
+			if (params.verdict === "reject") {
+				// Reset completed stage back to in-progress so director can re-run with corrections
+				const completedStage = state.pendingPreApproval.completedStage;
+				const completedSha = state.pendingPreApproval.sha;
+				state.stages[completedStage as Stage].status = "in-progress";
+				state.current = completedStage;
+				state.pendingPreApproval = null;
+				saveState(state);
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## pre-approval rejection: ${params.stage} @ ${completedSha?.slice(0, 7) ?? "?"}\n${params.note ?? "(no note given)"}\n`,
+				);
+				return ok(`REJECTED ${params.stage} — reset ${completedStage} to in-progress with correction note in decisions.md`);
+			}
+			// Approve: clear pre-approval, allow director to proceed
+			state.pendingPreApproval = null;
+			saveState(state);
+			return ok(`PRE-APPROVED ${params.stage} — director may now call wf_stage_start("${params.stage}")`);
 		},
 	});
 }

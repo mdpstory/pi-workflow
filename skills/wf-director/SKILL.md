@@ -71,6 +71,8 @@ wf_stage_start <stage>
       • response contains "auto-skipped" / "stage(s) skipped" → do NOT spawn a subagent
         and do NOT call wf_stage_complete for those stages — they are already marked
         "done" by wf_stage_start itself. Just continue reading for the next actionable stage.
+      • response contains "PRE_APPROVAL_REQUIRED" → STOP. Do not spawn subagent. Present
+        the summary to the user verbatim and wait for user to call wf_continue().
       • response contains "stage started" → spawn a NEW subagent (agent: <role>,
         env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID } — do NOT recruit existing generic/idle
         sessions via intercom for role work)
@@ -79,6 +81,9 @@ wf_stage_start <stage>
             only if summary looks wrong or you're about to call wf_stage_complete
           → wf_stage_complete <stage> <sha>
               APPROVED → wf_stage_start <next>
+              PRE_APPROVAL_REQUIRED → STOP. Present the summary to the user verbatim and
+                wait for user to call wf_continue(). Do NOT call wf_stage_start for the
+                next stage until user approves.
               AWAITING_HUMAN → stop, present the summary to the user verbatim, wait —
                 only the user (unassigned session) can call wf_approve; you cannot approve
                 your own stage even if you're confident
@@ -125,9 +130,13 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
 
 `wf_stage_complete` checks: artifact non-stub, no OPEN CLR ≤ current stage, retry bumps < 3, valid SHA, and (if the stage is in `requireApproval` config) routes to AWAITING_HUMAN instead of APPROVED. If BLOCKED, fix and rerun. Never bypass.
 
-## Human approval gate
+## Human approval gate (post-stage)
 
 If a stage is listed in `requireApproval` (project or global `pi-workflow.json`), `wf_stage_complete` will NOT mark it done — it returns `AWAITING_HUMAN` with a summary and stores it as the pending approval. Present that summary to the user verbatim and stop. Only a human (unassigned) session can call `wf_approve(stage, sha, verdict, note?)` — you (director) cannot self-approve even if the checklist looks clean to you. On `reject`, the stage resets to in-progress with the human's note appended to `decisions.md`; re-dispatch the role subagent with that note as the correction brief.
+
+## Pre-approval gate (before next stage)
+
+If the NEXT stage is listed in `requirePreApproval` (project or global `pi-workflow.json`), `wf_stage_complete` returns `PRE_APPROVAL_REQUIRED` with a summary of what was completed and what's coming next. Present that summary to the user verbatim and stop. Only a human (unassigned) session can call `wf_continue(stage, verdict, note?)`. On `reject`, the completed stage resets to in-progress. On `approve`, the director may proceed to `wf_stage_start` for the next stage.
 
 ## CLRs
 

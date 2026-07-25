@@ -12,11 +12,18 @@ export interface PendingApproval {
 	sha: string;
 	summary: string;
 }
+export interface PendingPreApproval {
+	nextStage: Stage;
+	completedStage: Stage;
+	sha: string;
+	summary: string;
+}
 export interface WfState {
 	stages: Record<Stage, { status: "todo" | "in-progress" | "done" | "blocked"; sha?: string; retries?: number }>;
 	current: Stage | null;
 	rulings: Record<string, RetryRec>; // CLR-id or defect-key → counters
 	pendingApproval?: PendingApproval | null;
+	pendingPreApproval?: PendingPreApproval | null;
 }
 
 export interface ClrIndex {
@@ -29,6 +36,7 @@ export function loadState(): WfState {
 		current: null,
 		rulings: {},
 		pendingApproval: null,
+		pendingPreApproval: null,
 	};
 	return readJson(statePath(), empty);
 }
