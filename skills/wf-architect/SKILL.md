@@ -32,7 +32,7 @@ You write design docs only. Do NOT write or edit source code (not even a snippet
 4. If inputs missing or contradictory → `wf_clr_open stage=architecture …` and stop.
 5. Write `.workflow/shared/artifacts/architecture.md`: general project architecture — structure, components, patterns, conventions, tech stack. How current task fits into the bigger picture (brief, not dominant).
 6. Append each non-obvious choice to `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` under `## design` with rationale + alternatives rejected.
-7. **If you read any new source files not in context.md, append them** to `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` under `## files explored` so downstream agents (Engineer, Reviewer) benefit. Include `path:startLine-endLine` for every key export/symbol cited, not just the filename.
+7. **If you read any new source files not in context.md, append them** via `wf_context_append` (not `edit`/`write` — it's atomic) under `## files explored` so downstream agents (Engineer, Reviewer) benefit. Include `path:startLine-endLine` for every key export/symbol cited, not just the filename.
 8. Run `git rev-parse HEAD` to get the current SHA. Do not commit.
 9. Notify Director with `{stage:"architecture", artifact:".workflow/shared/artifacts/architecture.md", sha}`.
 10. Stop.

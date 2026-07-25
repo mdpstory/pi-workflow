@@ -22,14 +22,14 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
    - Use `intercom({ action: "ask", to: "<peer>", message: "..." })` or `intercom({ action: "send", to: "<peer>", message: "..." })` to align on shared exports, function signatures, interface changes, or module boundaries before making breaking changes.
 4. If interface/behavior unclear and cannot be resolved via peer intercom → `wf_clr_open stage=implementation question="..."` and stop. Do not guess.
 5. Implement assigned task(s) per `architecture.md` and assigned task IDs.
-6. **Update Context Cache**: Append any new or modified files/symbols with exact line ranges (`path:startLine-endLine`) to `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` so peer engineers, Reviewer, and QA benefit.
+6. **Update Context Cache**: Call `wf_context_append` with new or modified files/symbols and exact line ranges (`path:startLine-endLine`) so peer engineers, Reviewer, and QA benefit. Do NOT use `edit`/`write` on `context.md` directly — `wf_context_append` is atomic under concurrent parallel Engineers, a raw edit is not.
 7. When all assigned tasks done, run `git rev-parse HEAD` to get current SHA. Notify Director `{stage:"implementation", taskId:"<T1>", sha:"<sha>"}` and stop.
 
 ## Rules
 
 - Always read `context.md` before starting code edits.
 - Use `intercom` to coordinate in real time with parallel peer Engineers working on companion tasks.
-- **Serialize `context.md` appends with peers.** The extension does not lock this file — two engineers appending at the same moment can clobber each other's edit. Before appending, `intercom` your peer(s) ("updating context.md now") and wait for ack if you know they're also about to write it.
+- **Always use `wf_context_append` to add to `context.md`, never `edit`/`write`.** It's the extension's atomic append tool — safe when multiple peer Engineers write at the same moment. No intercom handshake needed for this specifically.
 - Follow `architecture.md` literally. Signatures, names, module layout.
 - No design changes. If architecture is wrong, file CLR — do not silently deviate.
 - Tests: leave to QA unless the task explicitly says "add unit test for X".

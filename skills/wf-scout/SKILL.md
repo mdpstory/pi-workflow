@@ -45,7 +45,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 
    This prevents downstream agents (Architect, Engineer) from re-reading the same files.
 
-3. **Write `.workflow/$PI_WORKFLOW_ID/artifacts/context.md`** — the shared knowledge cache. This file lives across stages so every agent knows what previous agents already discovered.
+3. **Call `wf_context_append`** to populate `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` — the shared knowledge cache. This file lives across stages so every agent knows what previous agents already discovered. Use `wf_context_append`, not `write`/`edit` — it's atomic and safe if run alongside other writers.
 
    ```markdown
    # shared context
@@ -78,6 +78,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 - Facts + paths. No opinions on plan or design.
 - Cite file paths, symbol names, versions, and **exact line ranges** (`path:startLine-endLine`, e.g. `src/foo.ts:15-34`) for every specific finding — not just the file, and not just a single line. A range without an end forces the next agent to guess where the block stops.
 - **Every file you read MUST appear in both `research.md` (file summaries) AND `context.md` (files explored table).** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
+- Always use `wf_context_append` for `context.md`, never `edit`/`write`.
 - Every symbol, risk, or reusable component you cite MUST include its `path:startLine-endLine` — never a bare filename, never a single line number alone.
 - Be thorough in file summaries. A good summary saves Architect 10+ tool calls per file.
 

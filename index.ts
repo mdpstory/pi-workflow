@@ -961,6 +961,52 @@ export default function (pi: ExtensionAPI) {
 			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock } };
 		},
 	});
+
+	// --- wf_context_append ---
+	// Fixes a real race: context.md is the shared knowledge cache multiple roles (and
+	// multiple *parallel* engineers) append to via plain edit/write. Two concurrent
+	// read-modify-write edits can clobber each other — previously worked around by asking
+	// engineers to intercom-serialize manually (see wf-engineer SKILL.md history) instead
+	// of fixing it. This tool appends via a single fs.appendFileSync call, which on POSIX
+	// is one atomic write() syscall for reasonably sized entries — no read-modify-write, so
+	// concurrent callers can never lose each other's entries. Same role/CLR checks the
+	// tool_call hook applies to edit/write, reproduced here because custom tools bypass
+	// that hook (it only inspects event.toolName === "write"/"edit").
+	pi.registerTool({
+		name: "wf_context_append",
+		label: "wf_context_append",
+		description:
+			"Atomically append an entry to context.md (the shared knowledge cache). Safe under concurrent/parallel agents — unlike editing the file directly, this can't clobber another agent's simultaneous append. Any role permitted to write context.md.",
+		parameters: Type.Object({ entry: Type.String() }),
+		async execute(_id, params) {
+			const r = role();
+			const relPath = `.workflow/${workflowId()}/artifacts/context.md`;
+
+			const allow = isPathAllowedForRole(r, relPath);
+			if (!allow.ok) return deny(allow.reason ?? "not permitted");
+
+			// Same CLR gate edit/write already gets for context.md (not in the CLR-exempt set).
+			const state = loadState();
+			const clr = loadClr();
+			const gate = clrBlocksStage(clr, state.current);
+			if (gate.blocked) {
+				return deny(`OPEN CLR(s) block writes: ${gate.ids.join(", ")}. Resolve via wf_clr_resolve before editing.`);
+			}
+
+			const entry = params.entry.trim();
+			if (!entry) return deny("entry must not be empty");
+
+			const abs = artifactPath("context.md");
+			fs.mkdirSync(path.dirname(abs), { recursive: true });
+			// wf_init already stubs context.md into existence, so this is always an append to an
+			// existing file in normal flow — no separate "create with header" branch needed (that
+			// branch would itself race if two callers raced the file into existence).
+			const block = `\n<!-- appended by ${r} @ ${new Date().toISOString()} -->\n${entry}\n`;
+			fs.appendFileSync(abs, block);
+
+			return ok(`appended ${entry.length} chars to context.md`);
+		},
+	});
 }
 
 function nextStage(s: Stage): Stage | null {

@@ -18,7 +18,7 @@ You write tests and `test-report.md` only. Do NOT edit production source, even t
 1. Read `tasks.md`. Enumerate every acceptance criterion → AC-id.
 2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries to understand existing code structure before writing tests.
 3. Run existing test suite. Capture output.
-4. **If you discover test-relevant details** (mock patterns, test helpers, fixture locations), append to `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` — helps Documenter and future runs. Cite `path:startLine-endLine`, not just the filename.
+4. **If you discover test-relevant details** (mock patterns, test helpers, fixture locations), append via `wf_context_append` (not `edit`/`write`) — helps Documenter and future runs. Cite `path:startLine-endLine`, not just the filename.
 3. For each AC without a covering test, write one.
 4. Rerun full suite.
 5. Write `.workflow/$PI_WORKFLOW_ID/artifacts/test-report.md`:

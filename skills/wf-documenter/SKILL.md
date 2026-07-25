@@ -17,7 +17,7 @@ You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code o
 
 1. Read inputs. Only start if Director has approved Testing.
 2. **Read `.workflow/$PI_WORKFLOW_ID/artifacts/context.md` if it exists.** Use file summaries to understand codebase structure for documentation.
-3. **If you find API details or user-facing behavior not yet in context.md**, append them — completes the knowledge base for future workflow runs. Include `path:startLine-endLine` for cited code, not just the filename.
+3. **If you find API details or user-facing behavior not yet in context.md**, append them via `wf_context_append` (not `edit`/`write`) — completes the knowledge base for future workflow runs. Include `path:startLine-endLine` for cited code, not just the filename.
 2. Append a `.workflow/$PI_WORKFLOW_ID/artifacts/changelog.md` entry:
 
    ```markdown
