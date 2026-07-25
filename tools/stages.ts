@@ -14,6 +14,16 @@ import { artifactPath, artifactsDir } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
 import { clrBlocksStage, isStubContent, loadClr, loadState, saveState } from "../lib/state.ts";
 
+// The stage the user is actually being asked to approve: the next one that will really run.
+// Stages configured in skipStages (or already marked done) are fast-forwarded past, otherwise
+// wf_stage_start auto-skips them and the pending gate is left pointing at a dead stage.
+function nextGateStage(state: ReturnType<typeof loadState>, from: Stage): Stage | null {
+	const skip = skipStagesSet();
+	let n = nextStage(from);
+	while (n && (skip.has(n) || state.stages[n]?.status === "done")) n = nextStage(n);
+	return n;
+}
+
 export function registerStageTools(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_stage_start",
@@ -26,9 +36,18 @@ export function registerStageTools(pi: ExtensionAPI) {
 			const state = loadState();
 			const target = params.stage as Stage;
 			const idx = stageIndex(target);
-			// Block if pre-approval pending for previous stage
+			// Block if pre-approval pending for previous stage.
+			// A gate whose stage is already done (auto-skipped, or completed by another path) is
+			// stale — drop it silently instead of deadlocking the director on a stage nobody can run.
 			if (state.pendingPreApproval) {
-				return deny(`PRE_APPROVAL_REQUIRED: stage "${state.pendingPreApproval.completedStage}" done — user must approve before starting "${target}". User: call wf_continue(stage="${target}", verdict="approve"|"reject", note?)`);
+				const gated = state.pendingPreApproval.nextStage as Stage;
+				if (state.stages[gated]?.status === "done") {
+					state.pendingPreApproval = null;
+					saveState(state);
+				} else {
+					// Quote the GATED stage, not the requested one — wf_continue matches on nextStage.
+					return deny(`PRE_APPROVAL_REQUIRED: stage "${state.pendingPreApproval.completedStage}" done — user must approve before starting "${gated}". User: call wf_continue(stage="${gated}", verdict="approve"|"reject", note?)`);
+				}
 			}
 			if (idx > 0) {
 				const prevOk = state.stages[STAGES[idx - 1]].status === "done";
@@ -238,7 +257,7 @@ export function registerStageTools(pi: ExtensionAPI) {
 
 			// --- P4: pre-approval gate ---
 			// After marking stage done, check if NEXT stage needs user approval before starting.
-			const nxt = nextStage(stage);
+			const nxt = nextGateStage(state, stage);
 			if (nxt && requirePreApprovalSet().has(nxt)) {
 				const artifactList = ARTIFACT_FOR_STAGE[stage].join(", ") || "source code";
 				const summary = [
@@ -304,7 +323,7 @@ export function registerStageTools(pi: ExtensionAPI) {
 			state.stages[params.stage as Stage].sha = params.sha;
 
 			// Check pre-approval for next stage
-			const nxt = nextStage(params.stage as Stage);
+			const nxt = nextGateStage(state, params.stage as Stage);
 			if (nxt && requirePreApprovalSet().has(nxt)) {
 				const artifactList = ARTIFACT_FOR_STAGE[params.stage as Stage].join(", ") || "source code";
 				const summary = [
