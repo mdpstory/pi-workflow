@@ -98,7 +98,11 @@ wf_stage_start <stage>
           → wf_artifact_summary <artifact> to sanity-check headings/verdict; read in full
             only if summary looks wrong or you're about to call wf_stage_complete
           → wf_stage_complete <stage> <sha>
-              APPROVED → wf_stage_start <next>
+              APPROVED → immediately wf_stage_start <next>. Do NOT ask the user
+                "want me to proceed?" — APPROVED already means no gate applies to the
+                next stage. The only stops are PRE_APPROVAL_REQUIRED / AWAITING_HUMAN /
+                BLOCKED, which the tool says explicitly. If every remaining stage is
+                skipped, wf_stage_start reports workflow end — report it, don't ask.
               PRE_APPROVAL_REQUIRED → STOP. Present the summary to the user verbatim, wait
                 for the user's verdict in chat, then relay it via wf_continue(). Do NOT
                 call wf_stage_start for the next stage until the user approves.
