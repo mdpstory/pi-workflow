@@ -2,3 +2,4 @@ node_modules/
 *.log
 
 .workflow/
+package-lock.json

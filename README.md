@@ -234,8 +234,11 @@ and a depth ceiling prevents runaway recursive dispatch.
 
 **Agent personas**: `agents/*.md` (architect, documenter, engineer, planner, qa,
 reviewer, scout, worker — director intentionally excluded, see the comment in
-`agents/director.md`) ship in this package and are symlinked individually from
-`~/.pi/agent/agents/*.md` for discovery. `prompts/*.md` (`/implement`,
+`agents/director.md`) ship in this package and are loaded straight from it by
+`subagent/agents.ts` (pi has no manifest field for agents, so the extension
+discovers its own bundled dir). No symlinks into `~/.pi/agent/agents/` are
+needed; same-named user or project agents still override the bundled ones.
+`prompts/*.md` (`/implement`,
 `/scout-and-plan`, `/implement-and-review`) ship via the `"prompts"` field in
 `package.json`.
 

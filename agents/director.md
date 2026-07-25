@@ -6,8 +6,8 @@ model: claude-sonnet-4-5
 tools: read, write, bash, edit, wf_init, wf_stage_start, wf_stage_complete, wf_clr_open, wf_clr_resolve, wf_retry_bump, wf_retry_rule, wf_status
 ---
 
-<!-- Present here for completeness but deliberately NOT symlinked into
-     ~/.pi/agent/agents/: the director is not dispatched as a subagent —
+<!-- Present here for completeness but deliberately EXCLUDED from bundled
+     agent discovery (see BUNDLED_EXCLUDE in subagent/agents.ts): the director is not dispatched as a subagent —
      it's the orchestrating session itself (wf_claim("director") or
      PI_WORKFLOW_ROLE=director env). Discoverable here only for
      agentScope: "both"/"project" or manual reference. -->

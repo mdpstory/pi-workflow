@@ -102,6 +102,22 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
+/**
+ * Personas shipped inside this package (`<pkg>/agents/*.md`).
+ *
+ * pi has no manifest field for agents — `pi install`/`pi update --extensions`
+ * only wires extensions/skills/prompts/themes — so a git-installed copy would
+ * otherwise expose zero workflow personas and every DELEGATE hint emitted by
+ * `wf_stage_start` would fail to resolve. Loading them from disk here makes the
+ * package self-contained: no symlinks into ~/.pi/agent/agents to hand-maintain.
+ *
+ * Lowest precedence: user and project agents with the same name win, so a local
+ * override still works. `director.md` is bundled but excluded — the director is
+ * never dispatched as a subagent.
+ */
+const BUNDLED_AGENTS_DIR = path.join(import.meta.dirname, "..", "agents");
+const BUNDLED_EXCLUDE = new Set(["director"]);
+
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
 	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
@@ -110,6 +126,12 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
 
 	const agentMap = new Map<string, AgentConfig>();
+
+	if (scope !== "project") {
+		for (const agent of loadAgentsFromDir(BUNDLED_AGENTS_DIR, "user")) {
+			if (!BUNDLED_EXCLUDE.has(agent.name)) agentMap.set(agent.name, agent);
+		}
+	}
 
 	if (scope === "both") {
 		for (const agent of userAgents) agentMap.set(agent.name, agent);
