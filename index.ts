@@ -45,6 +45,7 @@ import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import { isReadToolResult } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import installSubagentTool from "./subagent/tool.ts";
 
 // ---- constants ----
 
@@ -551,6 +552,7 @@ function resetToolCalls(): void {
 }
 
 export default function (pi: ExtensionAPI) {
+	installSubagentTool(pi);
 	// Reset tool counter on session start / switch / reload
 	pi.on("session_start", async (_event, _ctx) => {
 		resetToolCalls();

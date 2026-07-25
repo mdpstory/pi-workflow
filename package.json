@@ -10,6 +10,7 @@
   },
   "pi": {
     "extensions": ["./index.ts"],
-    "skills": ["./skills"]
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
   }
 }
