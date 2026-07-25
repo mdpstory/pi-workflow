@@ -152,17 +152,17 @@ function repoRoot(): string {
 // PI_WORKFLOW_ID explicitly for each and pass it through to their subagents' task text
 // (step 1) — the marker alone cannot disambiguate which subagent belongs to which
 // concurrent director.
-const SESSION_ID: string = (() => {
-	if (process.env.PI_WORKFLOW_ID) {
-		const safe = process.env.PI_WORKFLOW_ID.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
-		if (safe) return safe;
-	}
+// Lazily minted/memoized — NOT computed at module load. Marker file (.workflow/.active-id)
+// must only appear once a wf_* tool is actually invoked, not just because the extension loaded.
+let _sessionId: string | undefined;
+function sessionId(): string {
+	if (_sessionId) return _sessionId;
 	const markerPath = path.join(process.cwd(), ".workflow", ".active-id");
 	const isDirector = (process.env.PI_WORKFLOW_ROLE ?? "director").toLowerCase() === "director";
 	if (!isDirector) {
 		try {
 			const existing = fs.readFileSync(markerPath, "utf8").trim();
-			if (existing) return existing;
+			if (existing) return (_sessionId = existing);
 		} catch {
 			// no marker yet (subagent spawned before any director ran here) — mint our own below
 		}
@@ -176,14 +176,14 @@ const SESSION_ID: string = (() => {
 			// best-effort; if we can't persist it, subagents just won't converge
 		}
 	}
-	return fresh;
-})();
+	return (_sessionId = fresh);
+}
 function workflowId(): string {
 	if (process.env.PI_WORKFLOW_ID) {
 		const safe = process.env.PI_WORKFLOW_ID.trim().replace(/[^a-zA-Z0-9._-]/g, "-");
 		if (safe) return safe;
 	}
-	return SESSION_ID;
+	return sessionId();
 }
 function wfRoot(): string {
 	return path.join(repoRoot(), ".workflow");
