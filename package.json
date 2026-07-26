@@ -5,7 +5,7 @@
   "keywords": ["pi-package"],
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs && for f in tests/spike-test.mjs tests/concurrency-test.mjs tests/preapproval-test.mjs tests/hooks-approval-test.mjs tests/knowledge-test.mjs tests/e2e-toy.mjs; do node \"$f\" || exit 1; done"
+    "test": "for t in tests/*.test.mjs; do node --test \"$t\" || exit 1; done && for f in tests/spike-test.mjs tests/concurrency-test.mjs tests/preapproval-test.mjs tests/hooks-approval-test.mjs tests/knowledge-test.mjs tests/e2e-toy.mjs; do node \"$f\" || exit 1; done"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

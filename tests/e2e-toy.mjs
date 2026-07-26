@@ -37,6 +37,7 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
@@ -284,8 +285,13 @@ assert(rc.details.ok === true, "architecture APPROVED");
 // =========================================================
 console.log("\n=== ENGINEER: implementation stage ===");
 setRole("director");
+// Fix B/F1: implementation is blocked until the director has actually discussed with the user.
 rc = await call("wf_stage_start", { stage: "implementation" });
-assert(rc.details.ok === true, "implementation started");
+assert(rc.details.ok === false && /discuss/i.test(rc.content[0].text), "implementation blocked before any user discussion");
+await call("wf_discuss", { topic: "kickoff", proposal: "add GET /health returning {status,uptime}", userSaid: "yes, that's what I want", decision: "proceed" });
+await call("wf_discuss", { topic: "impl-scope", proposal: "T1 handler + T2 route wiring, no auth changes", userSaid: "go ahead", decision: "proceed" });
+rc = await call("wf_stage_start", { stage: "implementation" });
+assert(rc.details.ok === true, "implementation started after discussion");
 
 setRole("engineer");
 // Engineer writes source files (not artifact .md)

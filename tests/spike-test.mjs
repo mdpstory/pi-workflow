@@ -57,11 +57,12 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
 
-const extModule = await jiti.import("/home/vivo/Notes/.pi/extensions/pi-workflow/index.ts");
+const extModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const factory = extModule.default || extModule;
 factory(api);
 
@@ -204,6 +205,10 @@ assert(rb.details.decision === "HUMAN", "post-3-rulings bump → HUMAN");
 console.log("\n=== 7b. trivial-task skip ===");
 process.env.PI_WORKFLOW_ROLE = "director";
 // research is in-progress from scenario 5. Skip it + task-breakdown + architecture.
+// Fix B/F4: the skip now requires the user to have agreed it is trivial, on the record.
+let rSkipNoTalk = await call("wf_stage_complete", { stage: "research", sha: "deadbee", skip: "trivial: one-line fix" });
+assert(rSkipNoTalk.details.ok === false && /trivial-scope/.test(rSkipNoTalk.content[0].text), "skip denied without a trivial-scope discussion");
+await call("wf_discuss", { topic: "trivial-scope", proposal: "treating as trivial: one-line fix", userSaid: "yes just do it", decision: "proceed" });
 let rSkip = await call("wf_stage_complete", { stage: "research", sha: "deadbee", skip: "trivial: one-line fix" });
 assert(rSkip.details.ok === true && rSkip.details.decision === "SKIPPED", "skip APPROVED");
 assert(rSkip.details.skipped.join(",") === "research,task-breakdown,architecture", "skipped research→architecture");

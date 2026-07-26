@@ -35,11 +35,12 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
 
-const extModule = await jiti.import("/home/vivo/Notes/.pi/extensions/pi-workflow/index.ts");
+const extModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const factory = extModule.default || extModule;
 factory(api);
 

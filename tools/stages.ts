@@ -5,8 +5,9 @@ import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentGitSha, isArchitectureFresh, stampArchitecture } from "../lib/architecture.ts";
-import { resetToolCalls, TOOL_CAP } from "../lib/ceiling.ts";
-import { requireApprovalSet, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
+import { currentToolCap, resetToolCalls } from "../lib/ceiling.ts";
+import { requireApprovalSet, requireDiscussionBeforeImpl, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
+import { discussionCount, hasDiscussionTopic } from "../lib/discussion.ts";
 import { ARTIFACT_FOR_STAGE, nextStage, ROLE_FOR_STAGE, STAGES, stageIndex, type Stage } from "../lib/constants.ts";
 import { nextGateStage, resolveApproval, resolvePreApproval } from "../lib/gates.ts";
 import { requireDirector, requireHumanGate, role } from "../lib/identity.ts";
@@ -26,18 +27,25 @@ function allSkippedSoFar(a: Stage[], b: Stage[]): string {
 // "unassigned" (the human, directly) and "director" (relaying a human verdict) call
 // wf_approve/wf_continue — but nothing used to distinguish relaying from inventing. When
 // the caller is director AND a UI is available, force an explicit confirm() showing the
-// exact verdict being relayed. When no UI is available, preserve today's behaviour (director
-// can still relay) but stamp `relayed-by-director` into decisions.md so the audit trail
-// records that no human keystroke was actually captured.
+// exact verdict being relayed.
+//
+// (Fix C / F2) Headless hole closed: with no UI the director used to simply return true and
+// stamp `relayed-by-director` — i.e. in `pi -p` mode it could approve its own gates with no
+// human keystroke at all. Now a headless relay REQUIRES `note` carrying the user's own words
+// (>= 8 chars), which is quoted verbatim into decisions.md as the audit trail. No note, no
+// approval.
+const MIN_RELAY_NOTE = 8;
+
 async function confirmHumanVerdict(
 	ctx: unknown,
 	tool: string,
 	stage: string,
 	sha: string | undefined,
 	verdict: string,
+	note: string | undefined,
 	summary?: string,
-): Promise<boolean> {
-	if (role() !== "director") return true; // unassigned session IS the human — nothing to relay
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+	if (role() !== "director") return { ok: true }; // unassigned session IS the human — nothing to relay
 	const anyCtx = ctx as { hasUI?: boolean; ui?: { confirm: (t: string, m: string) => Promise<boolean> } };
 	const stageLabel = stage.replace(/-/g, " ");
 	const shaPart = sha ? ` @ ${sha.slice(0, 7)}` : "";
@@ -45,16 +53,25 @@ async function confirmHumanVerdict(
 	if (anyCtx?.hasUI && anyCtx.ui?.confirm) {
 		const cleaned = summary?.replace(/\n## question[\s\S]*$/, "") ?? "";
 		const detail = cleaned ? `\n\n${cleaned}` : "";
-		return anyCtx.ui.confirm(
+		const confirmed = await anyCtx.ui.confirm(
 			"pi-workflow",
 			`The Director wants to ${verb.toLowerCase()} \"${stageLabel}\".${detail}\n\nIs this what you decided?`,
 		);
+		return confirmed ? { ok: true } : { ok: false, reason: "human declined to confirm this verdict via the UI prompt" };
 	}
+	const trimmed = (note ?? "").trim();
+	if (trimmed.length < MIN_RELAY_NOTE) {
+		return {
+			ok: false,
+			reason: `headless director-relay requires note=<the user's exact chat words> (>= ${MIN_RELAY_NOTE} chars). No UI is available to capture a human keystroke, so the note IS the audit trail — you may not ${verdict} "${stage}" on the user's behalf without it.`,
+		};
+	}
+	fs.mkdirSync(artifactsDir(), { recursive: true });
 	fs.appendFileSync(
 		path.join(artifactsDir(), "decisions.md"),
-		`\n## relayed-by-director: ${tool} verdict=${verdict} stage=${stage}${shaPart} (no UI available to capture human confirmation)\n`,
+		`\n## relayed-by-director: ${tool} verdict=${verdict} stage=${stage}${shaPart} (no UI — human words quoted below)\n> ${trimmed.replace(/\n/g, "\n> ")}\n`,
 	);
-	return true;
+	return { ok: true };
 }
 
 export function registerStageTools(pi: ExtensionAPI) {
@@ -135,6 +152,20 @@ export function registerStageTools(pi: ExtensionAPI) {
 			// landing stage itself requires pre-approval, gate it now — otherwise auto-skip would
 			// silently start a stage the user never approved.
 			const gateOnLanding = !!cur && cur !== target && requirePreApprovalSet().has(cur);
+
+			// (Fix B / F1) Soft-enforced discussion gate: no code lands before the director has
+			// actually talked to the user. Two entries minimum — kickoff, plus a plan/arch/scope
+			// confirmation. Checked before saveState (so a blocked start leaves disk untouched) and
+			// after the pre-approval landing check (a stage that isn't going to start anyway is the
+			// pre-approval gate's business, not this one's).
+			if (cur === "implementation" && !gateOnLanding && requireDiscussionBeforeImpl()) {
+				const n = discussionCount();
+				if (n < 2) {
+					return deny(
+						`Director must discuss with the user before starting implementation (${n}/2 discussion entries recorded). Talk to the user, then log each exchange with wf_discuss({ topic, proposal, userSaid, decision }) — e.g. "kickoff" (confirm what they asked for) and "impl-scope" (confirm the task graph + scope). Set requireDiscussionBeforeImpl:false in .pi/pi-workflow.json to disable this gate.`,
+					);
+				}
+			}
 			if (cur && !gateOnLanding) {
 				state.current = cur;
 				state.stages[cur].status = "in-progress";
@@ -173,8 +204,8 @@ export function registerStageTools(pi: ExtensionAPI) {
 			}
 			acquireOrCheckLock(); // refresh lock; also self-reclaims a stale one
 
-			// Reset per-stage tool budget so each stage gets a fresh 50-call cap
-			resetToolCalls();
+			// Reset per-stage tool budget so each stage gets a fresh cap (larger for implementation)
+			resetToolCalls(cur);
 
 			const allSkipped = [...skippedChain, ...freshChain];
 
@@ -196,7 +227,8 @@ export function registerStageTools(pi: ExtensionAPI) {
 				: "";
 			const hint = [
 				`\n\nDELEGATE: subagent({ agent: "${delegateRole}", task: "Load skill wf-${delegateRole}. ..." }) — do NOT pass env: role/id come from the dispatched agent's workflowRole frontmatter, not caller-supplied env.`,
-				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
+				`Each subagent gets a fresh context window and tool budget (this stage's cap: ${currentToolCap()}).`,
+				`Register each dispatch with wf_dispatch_note BEFORE calling subagent(...) and clear it with done:true after, so a resumed director never double-dispatches.`,
 				`Expected artifacts: ${artifactList}`,
 				`When finished, call wf_stage_complete("${cur}", sha).`,
 			].join(" ");
@@ -238,6 +270,14 @@ export function registerStageTools(pi: ExtensionAPI) {
 				const startIdx = stageIndex(stage);
 				if (startIdx === -1 || startIdx >= implIdx) {
 					return deny("skip only allowed on pre-implementation stages");
+				}
+				// (Fix B / F4) The trivial-task escape used to be a unilateral director call that
+				// bypassed planning/research/architecture with zero user involvement. The user must
+				// have agreed the task is trivial, on the record.
+				if (requireDiscussionBeforeImpl() && !hasDiscussionTopic("trivial-scope")) {
+					return deny(
+						'trivial-task skip requires the user\'s agreement on the record: wf_discuss({ topic: "trivial-scope", proposal: "treating as trivial: <reason>", userSaid: "<their exact words>" }) first.',
+					);
 				}
 				if (!/^[0-9a-f]{7,40}$/i.test(sha)) return deny(`bad sha: ${sha}`);
 				const skipped: string[] = [];
@@ -358,15 +398,15 @@ export function registerStageTools(pi: ExtensionAPI) {
 			stage: StringEnum([...STAGES]),
 			sha: Type.String(),
 			verdict: StringEnum(["approve", "reject"]),
-			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
+			note: Type.Optional(Type.String({ description: "the user's exact words. Required for reject (becomes the correction brief) AND for any headless (no-UI) director relay (becomes the audit trail)" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_approve");
 			if (blocked) return deny(blocked.msg);
 			const preState = loadState();
 			const summary = preState.pendingApproval?.summary;
-			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict, summary);
-			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
+			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict, params.note, summary);
+			if (!confirmed.ok) return deny(confirmed.reason);
 			// Re-load: confirm() was awaited, state may have moved under us.
 			const state = loadState();
 			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
@@ -393,15 +433,15 @@ const result = resolveApproval(state, params.stage as Stage, params.sha, params.
 		parameters: Type.Object({
 			stage: StringEnum([...STAGES]),
 			verdict: StringEnum(["approve", "reject"]),
-			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
+			note: Type.Optional(Type.String({ description: "the user's exact words. Required for reject (becomes the correction brief) AND for any headless (no-UI) director relay (becomes the audit trail)" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_continue");
 			if (blocked) return deny(blocked.msg);
 			const preState = loadState();
 			const summary = preState.pendingPreApproval?.summary;
-			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict, summary);
-			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
+			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict, params.note, summary);
+			if (!confirmed.ok) return deny(confirmed.reason);
 			// Re-load: confirm() was awaited, state may have moved under us.
 			const state = loadState();
 			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {

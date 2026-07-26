@@ -60,6 +60,18 @@ wf_msg_poll({ since: "2024-01-15T10:30:00Z" })
 
 Returns JSONL messages as objects.
 
+### `wf_msg_wait`
+
+Block up to `timeoutMs` waiting for a message addressed to your role.
+
+```typescript
+wf_msg_wait({ from: "engineer", timeoutMs: 30000 })
+```
+
+- Polls every 500ms; returns as soon as a matching message arrives
+- `since` defaults to "now" — pass an earlier ISO timestamp to include existing messages
+- On timeout it says so honestly; proceed on your own judgement or `wf_clr_open`
+
 ### `wf_bus_digest`
 
 Director-only: full transcript across all roles.
@@ -90,6 +102,21 @@ Each line in JSONL:
 - Single-syscall atomic appends per role file
 - No locking needed
 - Each role writes only to its own file
+
+## Honest limits (read before relying on "coordination")
+
+Bus messages are **fire-and-forget**, not live sync:
+
+- Every subagent is a one-shot spawned process. Engineer A can finish and exit before
+  Engineer B ever posts — nothing delivers a message to a dead process.
+- `wf_msg_poll` is opportunistic: it shows what happened to be written *by the time you
+  called it*.
+- `wf_msg_wait` blocks only the calling process, with a timeout. It cannot make a peer post,
+  and it cannot keep an exited peer alive.
+- Therefore: use the bus for **post-facto handoff and audit** ("here is the signature I
+  settled on"), not for a rendezvous protocol. Anything two engineers must agree on *before*
+  writing code belongs in `architecture.md`/`tasks.md`, decided upstream by the architect —
+  or the director should serialize the two dispatches.
 
 ## Patterns
 

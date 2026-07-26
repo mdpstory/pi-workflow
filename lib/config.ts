@@ -14,6 +14,8 @@ export interface WfConfig {
 	requireApproval?: string[];
 	requirePreApproval?: string[]; // stages that need user approval BEFORE next stage starts
 	interceptReads?: boolean; // P1-2: substitute fresh knowledge fragments for full read() bodies
+	autoResolveGateInUi?: boolean; // Fix D: let the TUI dialog resolve a human gate inline (default false)
+	requireDiscussionBeforeImpl?: boolean; // Fix B: block implementation until wf_discuss ran (default true)
 }
 export function loadConfig(): WfConfig {
 	const globalPath = path.join(os.homedir(), ".pi", "agent", "pi-workflow.json");
@@ -27,7 +29,19 @@ export function loadConfig(): WfConfig {
 		// P0-2: default true — dedup should not depend on agents remembering to opt in.
 		// Escape hatch: read with offset/limit always forces raw source; .workflow/ paths exempt.
 		interceptReads: p.interceptReads ?? g.interceptReads ?? true,
+		// Fix D: default false — the TUI dialog is advisory/display-only, the director's
+		// wf_approve/wf_continue call stays authoritative, so the two gate paths cannot
+		// double-fire and race each other. Set true to restore one-click inline resolve.
+		autoResolveGateInUi: p.autoResolveGateInUi ?? g.autoResolveGateInUi ?? false,
+		// Fix B: default true — director must actually discuss with the user before code lands.
+		requireDiscussionBeforeImpl: p.requireDiscussionBeforeImpl ?? g.requireDiscussionBeforeImpl ?? true,
 	};
+}
+export function autoResolveGateInUi(): boolean {
+	return loadConfig().autoResolveGateInUi === true;
+}
+export function requireDiscussionBeforeImpl(): boolean {
+	return loadConfig().requireDiscussionBeforeImpl !== false;
 }
 
 // Stages to auto-skip by default, via skipStages in .pi/pi-workflow.json (or

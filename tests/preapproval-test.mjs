@@ -28,6 +28,7 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");

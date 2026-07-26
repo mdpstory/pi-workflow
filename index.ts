@@ -27,7 +27,22 @@
  *            property): architecture.md
  * Knowledge (P1): per-source-file immutable fragments, .workflow/shared/knowledge/ or
  *            .workflow/<id>/knowledge/, see wf_knowledge_put/get.
- * Bus (P2): .workflow/<id>/bus/<role>.jsonl, see wf_msg_post/poll/wf_bus_digest.
+ * Bus (P2): .workflow/<id>/bus/<role>.jsonl, see wf_msg_post/poll/wf_msg_wait/wf_bus_digest.
+ * Discussion (Fix A): .workflow/<id>/discussion.md — durable Director<->User transcript written
+ *            by wf_discuss. The Director is the only role that talks to the user and must
+ *            actually discuss; wf_stage_start("implementation") is denied below 2 entries and
+ *            the trivial-task skip requires a "trivial-scope" entry (config:
+ *            requireDiscussionBeforeImpl, default true).
+ * Dispatch registry (Fix F): .workflow/<id>/inflight/*.json via wf_dispatch_note — a resumed
+ *            director sees what the dead session already spawned instead of double-dispatching.
+ * Status cursor (Fix E): .workflow/<id>/last-status.json — drives the "unread bus messages"
+ *            counter (rejection briefs surface instead of rotting on the bus).
+ *
+ * Human gates: with a UI the director must pass an explicit confirm(); headless it must pass
+ *            note=<the user's exact words> (>= 8 chars), quoted into decisions.md — a headless
+ *            director can no longer approve its own gate. The tool_result dialog interception is
+ *            advisory by default (config autoResolveGateInUi=false) so exactly one path resolves
+ *            a gate.
  *
  * P1-2 (mechanical read interception): implemented via the `tool_result` hook (which CAN
  * substitute a tool's content — unlike `tool_call`, which is block-only). Controlled by

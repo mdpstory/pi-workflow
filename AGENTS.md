@@ -19,7 +19,7 @@ pi -p "implement feature X"
 
 | Role | Purpose | Writes To |
 |------|---------|-----------|
-| **Director** | Orchestrates stages, resolves conflicts | `progress.md`, `decisions.md` |
+| **Director** | Orchestrates stages, resolves conflicts, **is the only role that talks to the user** | `decisions.md`, `clarifications.md`, `intent.md`, `discussion.md` |
 | **Planner** | Requirements, milestones, task breakdown | `plan.md`, `tasks.md`, `clarifications.md` |
 | **Scout** | Codebase research, risks, dependencies | `research.md`, `clarifications.md` |
 | **Architect** | System design, APIs, data flow | `architecture.md`, `decisions.md` |
@@ -81,7 +81,7 @@ planning → research → task-breakdown → architecture → implementation →
 | `wf_init` | Initialize workflow state |
 | `wf_stage_start` | Begin a stage |
 | `wf_stage_complete` | Mark stage done |
-| `wf_status` | Current workflow state |
+| `wf_status` | Current workflow state + NEXT ACTION + in-flight + unread bus + discussion |
 | `wf_new` | Start parallel workflow |
 | `wf_list` | Enumerate workflows |
 | `wf_claim` | Claim director role |
@@ -99,6 +99,9 @@ planning → research → task-breakdown → architecture → implementation →
 | `wf_continue` | Approve/reject stage after pre-approval gate |
 | `wf_artifact_summary` | Token-economic polling |
 | `wf_intent` | Director's persistent first-person memory/log (survives session kill) |
+| `wf_discuss` | Log a Director↔User discussion checkpoint (durable, survives session kill) |
+| `wf_dispatch_note` | Register/clear an in-flight subagent dispatch (no double-dispatch on resume) |
+| `wf_msg_wait` | Block until a peer bus message arrives, or timeout |
 
 ## Prompts
 
@@ -120,6 +123,10 @@ Test files in `tests/`:
 - `tests/e2e-toy.mjs` - End-to-end integration
 - `tests/spike-test.mjs` - Stress testing
 - `tests/preapproval-test.mjs` - Approval gate tests
+- `tests/discussion.test.mjs` - wf_discuss + discussion gate tests
+- `tests/headless-relay.test.mjs` - Headless director-relay note requirement
+- `tests/resume.test.mjs` - Resume: next-action, in-flight, unread bus, loop detector
+- `tests/_harness.mjs` - Shared sandbox harness (not a test file)
 - `tests/note.md` - Test notes
 
 ## See Also

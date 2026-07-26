@@ -2,14 +2,60 @@
 import { isReadToolResult } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { wfNamespaceRel, isPathAllowedForRole, isPathReadableByRole } from "./lib/access.ts";
-import { bumpToolCalls, currentToolCalls, resetToolCalls, TOOL_CAP } from "./lib/ceiling.ts";
-import { loadConfig } from "./lib/config.ts";
-import { relFromRepo } from "./lib/paths.ts";
+import { bumpToolCalls, currentToolCalls, currentToolCap, resetToolCalls } from "./lib/ceiling.ts";
+import { autoResolveGateInUi, loadConfig } from "./lib/config.ts";
+import * as fs from "node:fs";
+import { artifactPath, relFromRepo } from "./lib/paths.ts";
 import { role, workflowActive } from "./lib/identity.ts";
 import { freshFragments } from "./lib/knowledge.ts";
 import { clrBlocksStage, loadClr, loadState, saveState } from "./lib/state.ts";
 import { resolveApproval, resolvePreApproval } from "./lib/gates.ts";
 import type { Stage } from "./lib/constants.ts";
+
+// --- (Fix K) denied-loop detector -------------------------------------------------
+// In-process only (like the tool ceiling): a fresh session starts with a clean slate.
+// "No state change" is approximated by hashing the state file's mtime+size+current stage;
+// if a retry actually moved the workflow forward, the signature differs and the streak resets.
+const LOOP_WINDOW_MS = 30_000;
+const LOOP_LIMIT = 3;
+let lastCallKey = "";
+let lastCallCount = 0;
+let lastCallFirstTs = 0;
+
+function stateSignature(): string {
+	const s = loadState();
+	return `${s.current ?? "-"}|${Object.entries(s.stages).map(([k, v]) => `${k}:${v.status}:${v.sha ?? ""}`).join(",")}|${s.pendingApproval?.stage ?? "-"}|${s.pendingPreApproval?.nextStage ?? "-"}`;
+}
+
+function recordStageCall(toolName: string, input: unknown): { blocked: boolean; count: number; windowMs: number } {
+	const now = Date.now();
+	let sig = "";
+	try {
+		sig = stateSignature();
+	} catch {
+		// unreadable state — fall back to args-only identity
+	}
+	const key = `${toolName}:${JSON.stringify(input ?? {})}:${sig}`;
+	if (key !== lastCallKey || now - lastCallFirstTs > LOOP_WINDOW_MS) {
+		lastCallKey = key;
+		lastCallCount = 1;
+		lastCallFirstTs = now;
+		return { blocked: false, count: 1, windowMs: 0 };
+	}
+	lastCallCount++;
+	return { blocked: lastCallCount >= LOOP_LIMIT, count: lastCallCount, windowMs: now - lastCallFirstTs };
+}
+
+// (Fix H) Does tasks.md name this file as a task target? Cheap literal-substring check —
+// tasks.md is a small table written by the planner, and a false positive only costs the
+// engineer a full read (the safe direction).
+function isTaskTarget(rel: string): boolean {
+	try {
+		return fs.readFileSync(artifactPath("tasks.md"), "utf8").includes(rel);
+	} catch {
+		return false;
+	}
+}
 
 export function registerHooks(pi: ExtensionAPI) {
 	// Reset tool counter on session start / switch / reload
@@ -25,6 +71,21 @@ export function registerHooks(pi: ExtensionAPI) {
 		// Ceiling only applies to a session with an active role.
 		if (workflowActive()) bumpToolCalls();
 		const toolCalls = currentToolCalls();
+		const TOOL_CAP = currentToolCap();
+
+		// (Fix K / F10) "Reason, don't flail" was skill prose only — nothing physically stopped
+		// a director from re-firing a denied wf_stage_start/wf_stage_complete in a tight loop.
+		// Three identical stage-transition calls inside 30s with no state change in between =>
+		// blocked, with an instruction to read the previous denial and talk to the user.
+		if (workflowActive() && (event.toolName === "wf_stage_start" || event.toolName === "wf_stage_complete")) {
+			const loop = recordStageCall(event.toolName, event.input);
+			if (loop.blocked) {
+				return {
+					block: true,
+					reason: `pi-workflow: denied-loop detected — ${event.toolName} fired ${loop.count}× with identical arguments in ${Math.round(loop.windowMs / 1000)}s and no state change. Read the previous response, fix the actual blocker (missing artifact / open CLR / discussion gate), discuss with the user if unclear, then act. Re-firing will not change the answer.`,
+				};
+			}
+		}
 
 		// (C3) Hard-stop (cap+5) is checked FIRST and independently of the soft ceiling, and
 		// applies to every tool except the two escalation channels. The old nesting made the
@@ -168,6 +229,27 @@ export function registerHooks(pi: ExtensionAPI) {
 		// Need UI to show confirm dialog
 		if (!ctx.hasUI || !ctx.ui?.confirm) return undefined;
 
+		// (Fix D / F3) Two competing gate paths used to double-fire: this hook resolved the gate
+		// inline while the director skill was simultaneously told to present the summary in chat
+		// and then call wf_approve/wf_continue — whichever ran first cleared pendingApproval and
+		// the other failed with "no matching pending approval". Default is now ADVISORY: show the
+		// summary for visibility, leave the tool result untouched, and let the director's explicit
+		// wf_approve/wf_continue call (which forces its own confirm dialog) stay authoritative.
+		// Set autoResolveGateInUi:true for the old one-click inline resolve.
+		if (!autoResolveGateInUi()) {
+			const pending = loadState();
+			const summary = pending.pendingApproval?.summary ?? pending.pendingPreApproval?.summary ?? "";
+			const cleaned = summary.replace(/\n## question[\s\S]*$/, "");
+			if (ctx.ui?.notify) {
+				try {
+					ctx.ui.notify(`pi-workflow: waiting on your decision\n${cleaned}`, "info");
+				} catch {
+					// display-only; never let a notify failure alter gate semantics
+				}
+			}
+			return undefined; // tool result passes through unchanged — skill relays the verdict
+		}
+
 		const toolName = event.toolName;
 
 		// Ask for a correction note on reject — becomes the audit-trail brief the director
@@ -269,9 +351,17 @@ export function registerHooks(pi: ExtensionAPI) {
 		if (input.offset != null || input.limit != null) return undefined; // escape hatch: raw source
 		const rel = relFromRepo(input.path);
 		if (rel.startsWith("..") || rel.startsWith(".workflow/")) return undefined;
+		// (Fix H / F7) An engineer reading a file that tasks.md names as a target is about to
+		// EDIT it. Fragments would make its `edit` oldText fail to match, so serve raw source.
+		if (role() === "engineer" && isTaskTarget(rel)) return undefined;
 		const { sections } = freshFragments(rel);
 		if (!sections.length) return undefined;
-		const header = `cached analysis (source unchanged — hash-verified) — re-run read with an offset to force raw source.\n\n`;
+		// (Fix H / F7) Explicit edit warning: an engineer that edits from fragments produces
+		// broken diffs. Say exactly how to get the real bytes.
+		const header =
+			`cached analysis (source unchanged — hash-verified) — this is NOT the file's source text.\n` +
+			`If you are about to EDIT or WRITE this file, re-run read with { offset: 1 } to force raw source. ` +
+			`Editing based on fragments risks producing broken diffs (edit oldText will not match).\n\n`;
 		return { content: [{ type: "text", text: header + sections.join("\n\n") }] };
 	});
 }

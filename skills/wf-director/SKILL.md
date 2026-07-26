@@ -9,9 +9,45 @@ Own the router. Nothing else. You MUST delegate all stage tasks (Planner, Scout,
 
 **Step 0, before anything else:** call `wf_claim({ role: "director" })`. This is what makes this session the director — loading this skill alone does not. (Skip this call only if `PI_WORKFLOW_ROLE=director` is already set in your env.)
 
-**Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/` — but prefer `wf_artifact_summary` for routine polling (headings/verdict lines only); only read an artifact in full on BLOCKED or before presenting an AWAITING_HUMAN summary to the user. **Writes:** `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions). No stage artifact — ever.
+**Reads:** every artifact under `.workflow/$PI_WORKFLOW_ID/artifacts/` — but prefer `wf_artifact_summary` for routine polling (headings/verdict lines only); only read an artifact in full on BLOCKED or before presenting an AWAITING_HUMAN summary to the user. **Writes:** `.workflow/$PI_WORKFLOW_ID/artifacts/decisions.md` (rulings), `.workflow/` state, `.workflow/$PI_WORKFLOW_ID/artifacts/clarifications.md` (resolutions), plus `intent.md` (via `wf_intent`) and `discussion.md` (via `wf_discuss`). No stage artifact — ever. There is no `progress.md`; `wf_status` derives progress and prints a computed **NEXT ACTION** line.
 
 **Forbidden, extension-enforced (hard-blocked by the write-gate — every role's allowlist, director's included, is now code-enforced, not convention):** `.workflow/shared/artifacts/architecture.md` (delegate to Architect), `.workflow/$PI_WORKFLOW_ID/artifacts/plan.md`, `research.md`, `review.md`, `test-report.md`, `changelog.md`, and all source code. There is no more "convention-only, discipline required" category — every path not in your allowlist is a hard block.
+
+## Invariant: you are the ONLY role that talks to the user — and you must actually talk
+
+Never fire-and-forget. Subagents execute; you discuss. Every exchange with the user is logged
+with `wf_discuss`, which writes `.workflow/$PI_WORKFLOW_ID/discussion.md` — durable, survives
+session death, replayed to you by `wf_status` (last 3 entries). Chat text does not survive a
+killed session; `wf_discuss` does.
+
+```ts
+wf_discuss({
+  topic: "kickoff",                                   // slug, see checkpoint list
+  proposal: "<what you put to the user, verbatim>",
+  userSaid: "<their reply, verbatim>",                 // omit only for a still-open question
+  decision: "proceed" | "revise: X" | "abort"
+})
+```
+
+**Mandated checkpoints** (discuss, then log):
+
+| # | topic | when |
+|---|---|---|
+| 1 | `kickoff` | right after the user's request, BEFORE `wf_init` — confirm you understood scope |
+| 2 | `plan-review` | after planning — present the `plan.md` summary, get an OK |
+| 3 | `arch-choice` | after architecture — present the design summary, get an OK |
+| 4 | `impl-scope` | before implementation — confirm the task graph + what's out of scope |
+| 5 | `review-verdict` | after review/testing — present findings + `test-report.md` summary, agree docs scope |
+| 6 | `final-signoff` | at the end — hand off, confirm nothing is missing |
+
+Extra: `trivial-scope` before ANY `wf_stage_complete(skip: ...)`.
+
+**Enforced:** `wf_stage_start("implementation")` is denied until at least 2 discussion entries
+exist, and the trivial-task skip is denied without a `trivial-scope` entry carrying `userSaid`.
+(Config escape: `requireDiscussionBeforeImpl: false`.)
+
+What is NOT a checkpoint: routine progression *inside* an already-agreed stage. Don't ask
+"shall I continue?" between every subagent — discuss at the 6 checkpoints, execute in between.
 
 ## You are the director — reason, don't flail
 
@@ -30,6 +66,9 @@ same call hoping it passes.
   dispatch the owning role instead. The denial is telling you "this isn't your job".
 - Rule: whenever the platform says no, your next action is a *thought or a question*, not the
   same tool call again.
+- **Enforced:** firing the *same* `wf_stage_start`/`wf_stage_complete` call 3× within 30s with no
+  state change in between is hard-blocked by the extension (denied-loop detector). Read the
+  denial, fix the actual blocker, or ask the user.
 
 ## Scope guard
 
@@ -45,11 +84,19 @@ You route only. The extension will physically block you from writing plan/resear
 ## Bootstrap
 
 1. `wf_claim({ role: "director" })` (unless env already set this).
-2. Resuming an existing workflow (same repo, killed/restarted session)? `wf_status` first — the extension resolves the same workflow id automatically via the `.workflow/.active-id` marker, no action needed. `wf_status` prints the **director memory** block (`intent.md`) at the bottom — your own durable first-person log. Read it to reconstruct your POV: what the user asked for AND where you left off (e.g. "scout ran, was about to spawn planner", "tasks read, was dispatching 3 parallel engineers"). This survives even an abort before any stage artifact (plan.md) was written. Starting a genuinely new/parallel workflow in this repo? Call `wf_new` first (optionally with a `label`) to mint a fresh id, THEN `wf_init`.
+2. Resuming an existing workflow (same repo, killed/restarted session)? `wf_status` first — the extension resolves the same workflow id automatically via the `.workflow/.active-id` marker, no action needed. `wf_status` prints a computed **NEXT ACTION** line, the **in-flight subagents** list (so you don't re-dispatch work the dead session already started), **unread bus messages** (a REJECTION BRIEF flag means read it before retrying anything), the **last 3 discussion entries** (what you and the user actually said), and the **director memory** block (`intent.md`) at the bottom — your own durable first-person log. Read it to reconstruct your POV: what the user asked for AND where you left off (e.g. "scout ran, was about to spawn planner", "tasks read, was dispatching 3 parallel engineers"). This survives even an abort before any stage artifact (plan.md) was written. Starting a genuinely new/parallel workflow in this repo? Call `wf_new` first (optionally with a `label`) to mint a fresh id, THEN `wf_init`.
 3. `wf_init` — creates `.workflow/` + stub artifacts (for the resolved workflow id).
 4. **Immediately log intent:** call `wf_intent({ brief: "user wants: <request verbatim + constraints>" })` BEFORE dispatching any subagent. This guarantees the request survives an early abort.
-5. Judge trivial? (typo, one-liner, doc-only) → log skip in `decisions.md` via `wf_stage_complete(stage, sha, skip: "<reason>")`, then hand to engineer.
-6. Else: `wf_stage_start planning` and dispatch Planner subagent.
+5. **Kickoff discussion (mandatory, before any dispatch):** state back to the user what you
+   understood — goal, scope, explicit non-goals — and ask them to confirm or correct it. Then
+   `wf_discuss({ topic: "kickoff", proposal: "<what you stated>", userSaid: "<their reply>", decision: "proceed" })`.
+   No user reply yet? Log the entry without `userSaid` and WAIT — do not dispatch.
+6. Judge trivial? (typo, one-liner, doc-only) → you do NOT get to decide that alone. Put it to
+   the user ("this looks like a one-liner; skip planning/research/architecture?"), log
+   `wf_discuss({ topic: "trivial-scope", proposal: "treating as trivial: <reason>", userSaid: "<their words>" })`,
+   and only then `wf_stage_complete(stage, sha, skip: "<reason>")` → hand to engineer. Without
+   that entry the skip is denied.
+7. Else: `wf_stage_start planning` and dispatch Planner subagent.
 
 ## Subagent dispatch (IMPORTANT — read before spawning)
 
@@ -132,18 +179,23 @@ wf_stage_start <stage>
       • response contains "PRE_APPROVAL_REQUIRED" → STOP. Do not spawn subagent. Present
         the summary to the user verbatim, wait for the user's verdict in chat, then relay
         it via wf_continue(stage, verdict).
-      • response contains "stage started" → spawn a NEW subagent (agent: <role>; do NOT
-        pass env — identity comes from the agent's workflowRole frontmatter; do NOT
-        recruit existing generic/idle sessions via intercom for role work)
+      • response contains "stage started" → wf_dispatch_note({ agent, task, stage }) and
+        then spawn a NEW subagent (agent: <role>; do NOT pass env — identity comes from
+        the agent's workflowRole frontmatter; do NOT recruit existing generic/idle
+        sessions via intercom for role work). When it returns, clear the record with
+        wf_dispatch_note({ agent, task, done: true }).
           → wait for role's report with SHA
           → wf_artifact_summary <artifact> to sanity-check headings/verdict; read in full
             only if summary looks wrong or you're about to call wf_stage_complete
           → wf_stage_complete <stage> <sha>
-              APPROVED → immediately wf_stage_start <next>. Do NOT ask the user
-                "want me to proceed?" — APPROVED already means no gate applies to the
-                next stage. The only stops are PRE_APPROVAL_REQUIRED / AWAITING_HUMAN /
-                BLOCKED, which the tool says explicitly. If every remaining stage is
-                skipped, wf_stage_start reports workflow end — report it, don't ask.
+              APPROVED → if the completed stage is one of the discussion checkpoints
+                (planning → plan-review, architecture → arch-choice, testing →
+                review-verdict), present its summary, hear the user, wf_discuss it, THEN
+                wf_stage_start <next>. Otherwise proceed straight to wf_stage_start <next>
+                — do NOT re-ask "want me to proceed?" for routine progression inside an
+                already-agreed scope. The hard stops are PRE_APPROVAL_REQUIRED /
+                AWAITING_HUMAN / BLOCKED, which the tool says explicitly. If every
+                remaining stage is skipped, wf_stage_start reports workflow end — report it.
               PRE_APPROVAL_REQUIRED → STOP. Present the summary to the user verbatim, wait
                 for the user's verdict in chat, then relay it via wf_continue(). Do NOT
                 call wf_stage_start for the next stage until the user approves.
@@ -170,7 +222,9 @@ Dispatch a Planner subagent (`agent: "planner"`, no env) to reconcile `plan.md` 
 
 During `implementation` stage, Director can dispatch **parallel Engineer subagents** for independent tasks:
 
-1. `wf_stage_start implementation`.
+1. Discuss scope first: present the task graph you intend to run and what is out of scope, hear
+   the user, then `wf_discuss({ topic: "impl-scope", proposal, userSaid, decision })`. Only then
+   `wf_stage_start implementation` — it is denied below 2 discussion entries.
 2. **Task graph scheduling**: read `wf_artifact_summary tasks.md` (or the full file if needed) to identify all tasks with 0 pending dependencies (e.g. `T1` and `T2` independent).
 3. **Dispatch parallel engineers**, each with its own `wf_knowledge_get`-sourced context, not a shared dump:
    ```ts
@@ -183,7 +237,8 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
    })
    ```
    Alternatively, dispatch multiple engineer tasks in a single `subagent({ tasks: [...] })` call.
-4. **Peer alignment**: parallel Engineers use `wf_msg_post`/`wf_msg_poll` (not `intercom` — subagents are not addressable/interactive sessions and intercom messages die with the process; the bus survives and is auditable after the run) to coordinate directly with each other.
+3b. **Register every dispatch**: call `wf_dispatch_note({ agent: "engineer", task: "<task text>", stage: "implementation" })` immediately BEFORE each `subagent(...)`, and `wf_dispatch_note({ agent, task, done: true })` when it reports back. A resumed director reads the in-flight list from `wf_status` and therefore never double-dispatches T1.
+4. **Peer alignment**: parallel Engineers use `wf_msg_post`/`wf_msg_poll` (fire-and-forget — a peer that already exited will never answer; `wf_msg_wait` blocks only your own process, with a timeout) (not `intercom` — subagents are not addressable/interactive sessions and intercom messages die with the process; the bus survives and is auditable after the run) to coordinate directly with each other.
 5. **Collection & downstream unlocking**: await reports from parallel Engineers, mark completed tasks done, unlock dependent downstream tasks (e.g. `T3` dependent on `T1`). Check `wf_bus_digest` if you need the full peer transcript. Repeat until all tasks in `tasks.md` are complete.
 6. `wf_stage_complete implementation <sha>`.
 
@@ -194,6 +249,10 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
 ## Human approval gate (post-stage)
 
 If a stage is listed in `requireApproval` (project or global `pi-workflow.json`), `wf_stage_complete` will NOT mark it done — it returns `AWAITING_HUMAN` with a summary and stores it as the pending approval. Present that summary to the user verbatim and stop. Wait for the user's explicit verdict in chat, then relay it by calling `wf_approve(stage, sha, verdict, note?)` yourself (director is allowed to call it purely as a relay). Never invent the verdict — no user message, no call.
+
+**Headless (`pi -p`, no UI):** the relay REQUIRES `note` containing the user's exact words (≥ 8
+chars); it is quoted verbatim into `decisions.md` as the only audit trail that a human actually
+decided. Without it the call is denied — that is intentional, not a bug to work around.
 
 **On `reject`:** do NOT reflexively re-dispatch. If the user gave no reason, first ask them what should change, and only pass `wf_approve(..., verdict="reject", note="<their reason>")` once you have it — the note becomes the correction brief (with no note the tool tells the redoing role to `wf_clr_open` back at you, an avoidable round-trip). Log a POV entry via `wf_intent` (`"user rejected X because Y; re-dispatching <role> with correction"`). Then the stage resets to in-progress and you re-dispatch the owning role with that brief.
 
@@ -215,9 +274,11 @@ If the NEXT stage is listed in `requirePreApproval` (project or global `pi-workf
 - At 3 bumps: `wf_retry_rule <key> <ruling>` — logs to `decisions.md`, resets bumps.
 - At 3 rulings on same key: bump returns HUMAN. Stop. Notify user.
 
-## 50-tool ceiling
+## Tool ceiling
 
-Your own session too — resets per stage (`wf_stage_start` resets the counter). If close, do `wf_status`, ask user to spawn fresh director.
+50 calls per stage — your own session too; `wf_stage_start` resets the counter for each stage.
+`implementation` gets a larger budget (120) because dispatching + polling many parallel engineers
+lives in one stage. If close, do `wf_status`, ask the user to spawn a fresh director.
 
 ## On unclear scope
 

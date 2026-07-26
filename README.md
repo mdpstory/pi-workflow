@@ -30,8 +30,17 @@ pi install -l git:github.com/mdpstory/pi-workflow
 - Knowledge store (replaces the old shared `context.md`): `wf_knowledge_put`,
   `wf_knowledge_get`.
 - Inter-agent message bus (replaces `intercom` for subagent coordination):
-  `wf_msg_post`, `wf_msg_poll`, `wf_bus_digest`.
-- Human-in-the-loop approval gate: `wf_approve`.
+  `wf_msg_post`, `wf_msg_poll`, `wf_msg_wait`, `wf_bus_digest`. Fire-and-forget by
+  nature — see `docs/MESSAGE-BUS.md` for the honest limits.
+- Human-in-the-loop approval gate: `wf_approve`, `wf_continue` (post-stage-complete
+  pre-approval gate for the next stage).
+- Director's persistent first-person memory: `wf_intent` — survives session kill /
+  early abort so a resumed director recovers the original user request and its
+  own routing POV.
+- Durable Director↔User discussion transcript: `wf_discuss` — see the design
+  invariant below.
+- In-flight dispatch registry: `wf_dispatch_note` — a resumed director sees what the
+  dead session already spawned instead of double-dispatching it.
 - Token-economic director polling: `wf_artifact_summary`.
 - Per-role path allowlist, hard-blocked for **every** role including director —
   there is no convention-only/discipline-required category left.
@@ -39,6 +48,30 @@ pi install -l git:github.com/mdpstory/pi-workflow
 - Stage sequencing (can't skip stages without an explicit trivial-task escape hatch
   or `skipStages` config).
 - 8 role SKILL.md files under `skills/wf-*`.
+
+## Design invariant: the Director always discusses
+
+The Director is the **only** role that talks to the user, and it must actually have the
+conversation — never fire-and-forget. Subagents execute; the Director discusses.
+
+Because chat history dies with the process, every exchange is recorded with `wf_discuss` into
+`.workflow/<id>/discussion.md`, which `wf_status` replays (last 3 entries) on resume. Six
+mandated checkpoints: `kickoff`, `plan-review`, `arch-choice`, `impl-scope`, `review-verdict`,
+`final-signoff` (plus `trivial-scope` before any skip).
+
+This is enforced in code, not just prose:
+
+- `wf_stage_start("implementation")` is denied below 2 discussion entries
+  (`requireDiscussionBeforeImpl`, default true).
+- The trivial-task skip is denied without a `trivial-scope` entry quoting the user.
+- A headless (`pi -p`) director relaying a human gate verdict must pass `note` with the
+  user's exact words; it is quoted into `decisions.md`. No note, no approval.
+- Re-firing an identical denied `wf_stage_start`/`wf_stage_complete` 3× in 30s is blocked —
+  read the denial and talk to the user instead of looping.
+
+`wf_status` is the resume contract: computed **NEXT ACTION** line, in-flight subagents, unread
+bus traffic (with a rejection-brief flag), last 3 discussion entries, and the director memory
+log.
 
 ## Role model
 
@@ -60,8 +93,9 @@ Three states, resolved fresh on every call:
   child director permissions or resetting the recursion depth. Just
   `subagent({ agent, task })`.
 
-Once any role exists (director included), the write/edit hook and the 50-call
-ceiling activate uniformly. Director's own allowlist
+Once any role exists (director included), the write/edit hook and the per-stage tool
+ceiling activate uniformly (50 calls per stage; 120 during `implementation`, where the
+director dispatches and polls many parallel engineers inside a single stage). Director's own allowlist
 (`decisions.md`/`clarifications.md` only — no source, no stage artifact at all,
 `tasks.md` included) is code-enforced exactly like every other
 role, not left to skill-file discipline.

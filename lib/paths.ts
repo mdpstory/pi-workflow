@@ -40,6 +40,20 @@ export function statePath(): string {
 export function intentPath(): string {
 	return path.join(wfDir(), "intent.md");
 }
+/** Durable Director<->User discussion transcript (Fix A). Top-level like intent.md, NOT
+ * inside artifacts/ — it is a session record, not a stage artifact, so it sidesteps the
+ * artifact allowlist and survives session death for zero-context-loss resume. */
+export function discussionPath(): string {
+	return path.join(wfDir(), "discussion.md");
+}
+/** In-flight subagent dispatch registry (Fix F) — one json per dispatched agent. */
+export function inflightDir(): string {
+	return path.join(wfDir(), "inflight");
+}
+/** Cursor file recording the last time wf_status was called (unread-bus count, Fix E). */
+export function lastStatusPath(): string {
+	return path.join(wfDir(), "last-status.json");
+}
 export function clrIndexPath(): string {
 	return path.join(wfDir(), "clr-index.json");
 }

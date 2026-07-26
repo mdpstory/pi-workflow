@@ -107,6 +107,16 @@ read("src/index.ts")
 read("src/index.ts", { offset: 0, limit: 100 })
 ```
 
+### About-to-edit safety (Fix H)
+
+Fragments are analysis, not source — an `edit` whose `oldText` came from a fragment will not
+match. Two guardrails:
+
+- Substituted content carries an explicit header: *"If you are about to EDIT this file, re-run
+  read with `{ offset: 1 }` to force raw source."*
+- An **engineer** reading a file that `tasks.md` names as a task target is never intercepted —
+  that role is about to modify it, so it always gets raw bytes.
+
 ### Bash Bypass Blocked
 
 These commands are blocked for files with fresh fragments:

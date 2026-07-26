@@ -1,264 +1,185 @@
-# pi-workflow — Remediation Plan
+# pi-workflow — fixes & UX plan
 
-Findings from a full-source audit. Ordered by risk, grouped into shippable phases.
-Every item lists the file, the defect, and the fix. Phases are independent enough to
-land separately.
-
----
-
-## Phase 0 — Silent failures (ship first) — ✅ DONE (all 4 items shipped)
-
-Four small fixes. All are "the system lies to its operator" class: the code does
-something other than what it reports, so nobody notices until a run is already wrong.
-
-### 0.1 Reserved env keys are stripped silently — ✅ DONE
-
-- **File:** `subagent/run.ts` (`RESERVED_ENV_KEYS`, `buildChildEnv`), `tools/stages.ts` (DELEGATE hint), `skills/wf-director/SKILL.md`
-- **Defect:** `PI_WORKFLOW_ROLE` and `PI_WORKFLOW_ID` are dropped from caller-supplied
-  `env`. The director skill mandates passing them, and `wf_stage_start` emits a hint
-  telling the director to pass them. Both are ignored. It currently works only by
-  accident — role resolves from agent frontmatter, id from the `.active-id` marker.
-  Breaks the moment a task uses a `cwd` override or the marker is absent.
-- **Fix:**
-  1. `buildChildEnv` returns `droppedKeys: string[]` when reserved keys were supplied.
-  2. `runSingleAgent` surfaces that as a visible warning in the tool result.
-  3. Delete the `env:` clause from the DELEGATE hint string in `wf_stage_start`.
-  4. Rewrite the "Identity via env, not task-text convention" section of the director
-     skill to say identity comes from the dispatched agent's `workflowRole` frontmatter,
-     and that callers pass no role at all.
-- **Test:** dispatch with `env: {PI_WORKFLOW_ROLE: "director"}` → child must not be
-  director, and the result must say so.
-
-### 0.2 Director deadlocks at the hard tool ceiling — ✅ DONE
-
-- **File:** `hooks.ts`
-- **Defect:** hard stop (`> TOOL_CAP + 5`) exempts only `wf_clr_open` and `wf_msg_post`.
-  `wf_stage_start` is the only caller of `resetToolCalls()`, and it is not exempt. A
-  director that burns 55 calls inside one stage can never start the next one. Only a
-  process restart recovers.
-- **Fix:** add `wf_stage_start`, `wf_stage_complete`, `wf_status` to `HARD_STOP_EXEMPT`.
-- **Test:** drive a session past 55 calls, assert `wf_stage_start` still executes and
-  resets the counter.
-
-### 0.3 Human approval gate is convention-only — ✅ DONE
-
-- **File:** `lib/identity.ts` (`requireHumanGate`), `tools/stages.ts` (`wf_approve`, `wf_continue`)
-- **Defect:** `requireHumanGate` accepts `role === "director"` so the director can relay
-  a human verdict — but nothing distinguishes relaying from inventing. Every other
-  permission in this codebase is code-enforced; the one that gates human oversight is a
-  comment asking the model to behave.
-- **Fix:** in `wf_approve`/`wf_continue`, when `ctx.hasUI` and the caller is `director`,
-  require `await ctx.ui.confirm(...)` showing the stage, sha, and verdict. No UI
-  available → keep current behaviour but stamp `relayed-by-director` into `decisions.md`
-  so the audit trail records that no human keystroke was captured.
-- **Test:** director-role `wf_approve` with the confirm stub returning `false` must not
-  mark the stage done.
-
-### 0.4 `wf_status` omits `pendingPreApproval` — ✅ DONE
-
-- **File:** `tools/status.ts`
-- **Defect:** status prints `pendingApproval` only. A director polling status during a
-  pre-approval hold sees "pending approval: none", calls `wf_stage_start`, and gets a
-  `PRE_APPROVAL_REQUIRED` denial with no prior signal.
-- **Fix:** add a `pending pre-approval:` line mirroring the existing one.
+Guiding principle (user-stated, non-negotiable):
+- **Director must always be the one discussing with the user, and must have a discussion.**
+  Never fire-and-forget. The Director talks; subagents only execute.
+- Parallel workflows keep working.
+- Any session death mid-run → new session resumes with **zero context loss**.
+- Director ↔ subagent and subagent ↔ subagent can talk + share knowledge.
 
 ---
 
-## Phase 1 — Correctness holes — ✅ DONE (all 7 items shipped)
+## Flaws found (verified against code)
 
-### 1.1 CLR stage is caller-chosen and only gates upstream — ✅ DONE
+### F1 — Director does not have to discuss with the user at all
+- `requireApproval` and `requirePreApproval` default to `undefined`/empty in `lib/config.ts`. Out of the box the Director runs planning → research → task-breakdown → architecture → implementation → review → testing → documentation with **zero user checkpoints**.
+- `skills/wf-director/SKILL.md` per-stage loop explicitly says:
+  > "APPROVED → immediately `wf_stage_start <next>`. Do NOT ask the user 'want me to proceed?'"
+  → contradicts the "always discuss" principle.
+- Bootstrap logs `wf_intent` but never confirms scope back to the user before dispatching Planner. Trivial-task escape hatch (step 5) hands directly to Engineer with **no user discussion at all**.
 
-- **File:** `tools/clr.ts` (`wf_clr_open`), `lib/state.ts` (`clrBlocksStage`)
-- **Defect:** `clrBlocksStage` matches `idx <= curIdx`, so a CLR filed against a
-  *downstream* stage blocks nothing. `stage` is free-form caller input, so an agent can
-  file at a later stage and keep writing — the halt is opt-in.
-- **Fix:** default `stage` to `state.current`; reject a `stage` strictly later than
-  `state.current` with an explanatory denial.
+### F2 — Headless "director relay" auto-approves without a human
+- `tools/stages.ts::confirmHumanVerdict`: when `role() === "director"` and there is no UI (`hasUI` false), the function **returns `true`** and just appends `relayed-by-director` to `decisions.md`. In headless (`pi -p`) mode the Director can approve its own `requireApproval` gates with no human keystroke. That defeats the whole point of the P3 gate.
+- No requirement that the `note` field carries the actual user's chat words as an audit trail.
 
-### 1.2 `wf_clr_open` and `wf_retry_bump` have no role check — ✅ DONE
+### F3 — Two competing human-gate paths can double-fire
+- `hooks.ts` `tool_result` intercepts `AWAITING_HUMAN` / `PRE_APPROVAL_REQUIRED` and **resolves the gate inline** via the TUI confirm dialog, substituting the tool result.
+- The skill simultaneously instructs the Director to *present the summary to the user in chat, wait for verdict, then call `wf_approve`/`wf_continue`*.
+- Race: dialog resolves first → `pendingApproval` cleared → Director's later `wf_approve` fails with "no matching pending approval". Confusing for both LLM and user.
 
-- **File:** `tools/clr.ts`
-- **Defect:** every other wf_ tool gates on `workflowActive()` or `requireDirector()`.
-  These two do not, so an unassigned session can halt or escalate an active workflow.
-- **Fix:** add `workflowActive()` guards, matching the knowledge and bus tools.
+### F4 — Bootstrap "trivial-task" skip bypasses ALL discussion
+- Director unilaterally decides "typo, one-liner, doc-only" → skips planning/research/architecture and dispatches Engineer. No user says "yes, treat this as trivial".
 
-### 1.3 Knowledge path sanitization collides — ✅ DONE
+### F5 — Resume gaps (context loss claim doesn't fully hold)
+- `intent.md` recovers Director's POV, but there is **no record of user↔Director dialogue**. If Director died after presenting a plan and hearing user say "change X", that exchange lives only in the killed session's chat log — resumed session sees only `intent.md` bullet points, not the actual conversation.
+- No record of which subagent is currently in-flight. Resumed Director may double-dispatch.
+- Subagent internal reasoning dies with its process; only what it wrote to disk survives. Advertised as "zero context loss" — reality is "zero *artifact* loss".
 
-- **File:** `lib/paths.ts` (`sanitizeFilePath`)
-- **Defect:** `a/b.ts` and a literal `a__b.ts` both map to `a__b.ts`. Two distinct source
-  files share one fragment directory, so analysis cross-contaminates.
-- **Fix:** name the directory `<basename>-<sha1(file).slice(0,8)>`. The authoritative
-  path is already the `file:` frontmatter, which `listCoverage` reads — so nothing
-  depends on the directory name being reversible.
-- **Migration:** old dirs stay readable; add a one-shot re-key on `wf_init`, or accept
-  that pre-existing fragments age out as stale.
+### F6 — Peer subagent "coordination" is weaker than advertised
+- Skill says parallel engineers coordinate via `wf_msg_post`/`wf_msg_poll`. But each engineer is a one-shot spawned process — engineer A can finish before engineer B ever posts. No mechanism to wait for peer messages; polling is opportunistic.
 
-### 1.4 Fragment freshness is `mtime + size` — false-fresh is possible — ✅ DONE
+### F7 — `interceptReads` default footgun
+- Engineer about to edit a file does `read` → gets cached fragments, not raw source. Header warns but engineer may edit blindly. Offset/limit escape exists but isn't obvious.
 
-- **File:** `lib/knowledge.ts`, `tools/knowledge.ts`
-- **Defect:** a same-size edit (character swap), or a git checkout that preserves mtime,
-  leaves fragments marked fresh while the source has changed. With read interception on
-  by default, an engineer about to edit that file is served stale analysis *instead of*
-  the real bytes.
-- **Fix:** add `hash:` (sha1 of contents) to fragment frontmatter; treat a fragment as
-  fresh only on hash match. Keep `mtime`/`size` as a cheap pre-filter so the hash is
-  computed only when they match.
+### F8 — Tool-ceiling exhaustion during implementation
+- Ceiling resets per stage, but `implementation` is ONE stage. Director dispatching + polling many parallel engineers can hit the 50-call hard-stop mid-graph, requiring process restart.
 
-### 1.5 `interceptReads` default contradicts its own documentation — ✅ DONE
+### F9 — Doc/code inconsistency (`progress.md`)
+- `AGENTS.md` and `agents/director.md` claim Director owns `progress.md`.
+- `lib/constants.ts` `ROLE_ALLOW.director` only permits `decisions.md` + `clarifications.md`. `ARTIFACT_MDS` has no `progress.md`. Attempting to write it → hard-blocked.
+- Docs lie about the actual permission set.
 
-- **File:** `index.ts` docblock vs `lib/config.ts`
-- **Defect:** the docblock says "Off by default because it changes read semantics"; the
-  code says `?? true`.
-- **Fix:** land 1.4 first, then pick one and make both agree. Recommendation: default
-  `false` until hash-based freshness ships, then `true`.
+### F10 — `wf_stage_start`/`wf_stage_complete` deny path allows fire-and-forget retries
+- Reason-don't-flail rule lives in skill prose only; nothing physically stops the Director from retrying a denied stage transition in a loop.
 
-### 1.6 Architect can overwrite director rulings — ✅ DONE
+### F11 — Rejection brief only lands on `bus/` + `decisions.md`
+- `lib/gates.ts::notifyRejection` posts to bus. Fine — but if the Director's context has drifted, it may never poll after rejection. No `wf_status` line surfacing "unread rejection brief".
 
-- **File:** `lib/constants.ts` (`ROLE_ALLOW.architect`)
-- **Defect:** `decisions.md` is in the architect allowlist, but both the director skill
-  and the artifact-ownership table call it director-owned.
-- **Fix:** remove `decisions.md` from `ROLE_ALLOW.architect`. If architects genuinely
-  need to record design rationale, give them `design-decisions.md` as a separate
-  artifact rather than sharing the rulings log.
-
-### 1.7 Lock liveness ignores hostname — ✅ DONE
-
-- **File:** `lib/lock.ts`
-- **Defect:** `isPidAlive` runs `process.kill(pid, 0)` locally against a lock possibly
-  written on another machine (shared checkout / NFS). Unrelated local PID → false ALIVE.
-  PID reuse produces the same false positive on one host.
-- **Fix:** compare `os.hostname()`. Same host → PID check as today. Different host →
-  report `UNKNOWN (foreign host)` and require an explicit override rather than silently
-  reclaiming or silently blocking.
+### F12 — `wf_status` doesn't tell resumed Director what to do next
+- Dumps state + intent, but no explicit "next action" line. Resumed Director has to reason from scratch each time.
 
 ---
 
-## Phase 2 — Flow and design — ⬜ not started
+## Fixes (grouped, ordered by leverage)
 
-### 2.1 `task-breakdown` is a no-op gate
+### Fix A — Introduce `wf_discuss` tool (NEW) + `discussion.md` artifact
+Durable record of every Director↔User exchange. Fills F5 + operationalises F1.
 
-- **File:** `lib/constants.ts` (`ARTIFACT_FOR_STAGE`)
-- **Defect:** `planning` already requires `tasks.md`, so `planning` cannot complete
-  without it — and `task-breakdown`'s only required artifact therefore always exists and
-  is non-stub by the time the stage runs. The gate can never fail.
-- **Fix:** either drop `tasks.md` from `planning` (planning produces `plan.md`;
-  task-breakdown reconciles plan + research into `tasks.md`, which is what the director
-  skill already describes), or delete the stage. Prefer the former — it matches the
-  documented intent.
+- New file: `lib/paths.ts::discussionPath()` → `.workflow/<id>/discussion.md` (top-level like `intent.md`, NOT inside `artifacts/` — sidesteps the artifact allowlist).
+- New tool `wf_discuss` in `tools/status.ts`:
+  ```
+  wf_discuss({ topic, proposal, userSaid?, decision?, replace? })
+  ```
+  - `topic`: short slug ("kickoff", "plan-review", "impl-scope", "arch-choice", "review-verdict", "final-signoff")
+  - `proposal`: what Director is asking / presenting to the user (verbatim)
+  - `userSaid`: verbatim user reply (required unless `proposal` is a fresh open question)
+  - `decision`: the resolved outcome ("proceed", "revise: X", "abort", "custom: ...")
+  - Appends ISO-timestamped block to `discussion.md`. Director-only for write. Anyone can read.
+- `wf_status` displays the **last 3 discussion entries** alongside intent.
+- Skill mandates `wf_discuss` at these checkpoints:
+  1. **Kickoff** — right after user's initial request, before `wf_init`. Confirm understanding.
+  2. **After planning** — present plan.md summary, get user OK.
+  3. **After architecture** — present arch summary, get user OK.
+  4. **Before implementation** — confirm task graph + scope.
+  5. **After testing** — present test-report summary + ask about docs scope.
+  6. **Final** — hand off / sign-off.
 
-### 2.2 Retry cap is global and blocks unrelated stages
+### Fix B — Soft-enforce discussion (F1)
+- `wf_stage_start("implementation")` **blocks** if `discussion.md` has < 2 entries (kickoff + plan/arch confirmation). Error is human-readable: "Director must run `wf_discuss` with the user before starting implementation."
+- Trivial-task skip (F4) now requires `wf_discuss({ topic: "trivial-scope", proposal: "treating as trivial: <reason>", userSaid: "<quote>" })` first, otherwise `wf_stage_complete(skip: ...)` refuses.
+- Update skill: change "Do NOT ask the user" line to "Do NOT re-ask when only routine mid-stage progression is happening; **do** discuss at the checkpoint list."
 
-- **File:** `tools/stages.ts` (`wf_stage_complete`, check 3)
-- **Defect:** the check scans all of `state.rulings`. One stuck defect from `review`
-  permanently blocks `documentation` from completing, forever, until ruled.
-- **Fix:** record the stage on each retry key and only check keys belonging to the
-  current stage — or only keys bumped since the current stage started.
+### Fix C — Close the headless auto-approve hole (F2)
+- `tools/stages.ts::confirmHumanVerdict`: when `role() === "director"` and no UI:
+  - `verdict` **must** carry a `note` of ≥ 8 chars whose text is treated as the user's own words (quoted into `decisions.md`).
+  - Without `note`, `wf_approve`/`wf_continue` return `deny("headless director-relay requires note=<user's exact chat words>")`.
+- `notifyRejection` receives the note verbatim → bus body.
 
-### 2.3 No abort / reopen path
+### Fix D — De-conflict double-gate paths (F3)
+- `hooks.ts` tool_result gate interception becomes **advisory** by default. Config knob `autoResolveGateInUi` (default `false`).
+- When off: hook still opens dialog but only for **display**; returns the same `AWAITING_HUMAN` text unchanged, letting the skill's `wf_approve` call remain authoritative.
+- When on: current inline-resolve behaviour preserved for power users who want one-click.
+- Skill loses the branching "was it the dialog or was it me" ambiguity.
 
-- **Defect:** once a stage is `done`, the only way back is a rejection, which requires a
-  matching pending approval. A stage completed in error is unrecoverable.
-- **Fix:** add `wf_stage_reopen(stage, reason)`, director-only, which resets the stage
-  and every downstream stage to `todo`, and logs to `decisions.md`.
+### Fix E — Resume completeness (F5)
+- `wf_status` gains a `next action` computed line:
+  - If `pendingApproval` → "relay user verdict via wf_approve".
+  - If `pendingPreApproval` → "relay via wf_continue".
+  - Elif open CLR at ≤ current → "resolve CLR <id>".
+  - Elif `current === null` → "wf_stage_start <next-runnable>".
+  - Else → "await subagent for stage <current>".
+- `wf_status` gains an `unread bus messages` count (director-inbox files with mtime > last `wf_status` call time, tracked in `.workflow/<id>/last-status.ts`).
+- `wf_status` prints last 3 `discussion.md` entries.
 
-### 2.4 Rejection destroys the rejected draft
+### Fix F — In-flight subagent tracking (F5)
+- On `subagent` dispatch, extension records `.workflow/<id>/inflight/<agent>-<pid>.json` with `{ agent, task, startedAt }`. On process exit, unlink it. `wf_status` surfaces "in-flight" list so resumed Director doesn't double-dispatch.
+- Best-effort — if pi doesn't expose subagent lifecycle hooks, add a lightweight `wf_dispatch_note` tool the skill calls immediately before `subagent(...)`.
 
-- **File:** `tools/status.ts` (`wf_write_artifact`)
-- **Defect:** writes are wholesale overwrites. On rejection the stage resets and the
-  re-dispatched role overwrites the artifact — deleting the very draft the correction
-  note refers to.
-- **Fix:** snapshot to `artifacts/.history/<artifact>-<timestamp>.md` before every
-  overwrite. Cheap, and makes rejection loops auditable.
+### Fix G — Fix `progress.md` inconsistency (F9)
+- Either add `progress.md` to Director's allowlist + `ARTIFACT_MDS`, **or** strip it from `AGENTS.md` and `agents/director.md`.
+- Recommendation: **strip it**. `intent.md` + `decisions.md` + new `discussion.md` cover the role. Progress derives from `wf_status` output.
 
-### 2.5 Pre-approval summary is copy-pasted three times
+### Fix H — `interceptReads` guardrail (F7)
+- When a `read` is intercepted, header adds an explicit engineer note:
+  > "If you are about to EDIT this file, re-run `read` with `offset: 1` to get raw source. Editing based on fragments risks producing broken diffs."
+- Consider role-based skip: if `role() === "engineer"` and the file matches a task target in `tasks.md`, do NOT intercept.
 
-- **File:** `tools/stages.ts`
-- **Defect:** the identical summary block is built in `wf_stage_start`,
-  `wf_stage_complete`, and `wf_approve`. Three places to update, guaranteed to drift.
-- **Fix:** extract `buildPreApprovalSummary(completedStage, nextStage, sha)`.
+### Fix I — Ceiling relief inside implementation (F8)
+- Add sub-stage reset: `wf_dispatch_group_start`/`wf_dispatch_group_end` tools that reset the tool counter for a batch of parallel engineers. Only usable during `implementation`.
+- OR: raise ceiling only for `implementation` stage (e.g. 100 calls).
+- Pick simpler option after prototyping.
 
----
+### Fix J — Peer coordination clarity (F6)
+- Document honestly: "Bus messages are fire-and-forget; use for post-facto handoff, not live sync."
+- Optional: add `wf_msg_wait({ from, timeoutMs })` that blocks until a message arrives OR timeout. Only usable inside a single subagent process; still no cross-process sync guarantees.
 
-## Phase 3 — Performance and hygiene — ⬜ not started
-
-- **Knowledge fragments are never pruned.** `freshFragments` does a full `readdirSync` +
-  frontmatter parse on every intercepted `read` and every `bash cat`. Add a prune step to
-  `wf_init` (drop stale fragments) and memoize per-process by `(file, mtime, size)`.
-- **`listCoverage` re-scans per directory** — it calls `freshFragments` inside the loop,
-  re-stat-ing and re-parsing everything. Collect metadata in one pass.
-- **`resetToolCalls()` on `session_start` is a free budget reset.** An in-process `/new`
-  clears the ceiling. Either persist the counter per workflow id, or accept it and
-  document it explicitly.
-- **`wf_artifact_summary` cannot distinguish stub from real.** The director's primary
-  polling tool returns the same "(no heading/verdict lines found)" for an untouched stub
-  and a badly formatted real artifact. Return an explicit `stub: true` in `details`.
-- **Bash-interception denial names no escape hatch.** The message tells the agent to use
-  `read`/`wf_knowledge_get` but never mentions that `offset`/`limit` forces raw source.
-- **Test files at repo root** — `e2e-toy.mjs`, `spike-test.mjs`, `concurrency-test.mjs`,
-  `knowledge-test.mjs`, `preapproval-test.mjs`, `note.md`. Move to `tests/`. — ✅ DONE
-  (landed as a byproduct of Phase 4, see below).
-
-Remaining Phase 3 items (fragment pruning, `listCoverage` re-scan, tool-call ceiling
-persistence, `stub: true` in `wf_artifact_summary`, bash-denial escape-hatch hint) are
-still ⬜ not started.
-
----
-
-## Phase 4 — Test coverage — ✅ DONE
-
-The highest-risk code in the package — `lib/access.ts` and `lib/state.ts` — has no
-dedicated test. Both are pure functions, so this is cheap.
-
-- **Access-control matrix:** `isPathAllowedForRole` across 9 roles × ~12 path shapes
-  (own artifact, foreign namespace, shared artifact, state file, source, test file,
-  `docs/`, `README.md`, path traversal). Table-driven, one assertion per cell. —
-  `tests/access.test.mjs` (11 cases). Also pins the actual (broader-than-documented)
-  behaviour that qa/documenter get blanket non-artifact source write access, not just
-  test-file/docs patterns — a real narrowing is a Phase-2/3 candidate, not done here.
-- **CLR gating:** `clrBlocksStage` upstream/downstream/equal-stage cases. —
-  `tests/state.test.mjs` (6 cases).
-- **Stub detection:** `isStubContent` against a real artifact that quotes `_empty_`. —
-  `tests/state.test.mjs` (4 cases).
-- **Architecture freshness:** `isArchitectureFresh`/`stampArchitecture` — fresh right
-  after stamping, stale after a real tree change, fresh again after restamp, `.workflow/`
-  churn excluded from the diff. — `tests/architecture.test.mjs` (3 cases, real git
-  sandbox repos).
-- **Stage machine (auto-skip chains, pre-approval landing on a different stage than
-  requested):** already covered by existing `tests/preapproval-test.mjs` and
-  `tests/e2e-toy.mjs`; not re-duplicated as unit tests.
-
-Run via `npm test` (node:test unit files + the mock-pi-API e2e/integration scripts).
-
-**Side fixes made while wiring this up (pre-existing breakage, not new regressions):**
-- Moved the root-level `*-test.mjs`/`e2e-toy.mjs`/`note.md` into `tests/` (this is also
-  Phase 3's "test files at repo root" item — done as a byproduct).
-- All 5 legacy mock-pi-API scripts hardcode a local `Type` stub that predated Phase 1.7's
-  `Type.Boolean(...)` usage in `tools/lifecycle.ts` (`forceReclaimForeignLock`) — every
-  one crashed with `Type.Boolean is not a function` before even reaching its assertions.
-  Added `Boolean` to each stub.
-- All 5 scripts read `os.homedir()` (via `loadConfig()`) without isolating `HOME` to the
-  sandbox, so a real `~/.pi/agent/pi-workflow.json` (this machine has one configuring
-  `requirePreApproval`/`skipStages`) silently leaked into every "sandboxed" run. Set
-  `process.env.HOME = sandbox` right after `mkdtempSync` in each script.
-- `tests/knowledge-test.mjs` hardcoded the pre-Phase-1.3 fragment directory name
-  (`src__file2.ts`); Phase 1.3 added a `-<sha1(file).slice(0,8)>` suffix. Updated to
-  discover the directory instead of hardcoding it.
-- `tests/e2e-toy.mjs` asserted architect may write `decisions.md` — inverted by Phase
-  1.6 (director's rulings log now, architect uses `design-decisions.md`). Updated the
-  assertion to match the new, correct behaviour.
+### Fix K — Hard-block loop retries (F10)
+- `hooks.ts` tool_call: track last 3 tool calls per session. If identical `wf_stage_start` / `wf_stage_complete` call fired 3× in ≤ 30 s with no state change → block with "denied loop detected — read the previous response, discuss with user, then act".
 
 ---
 
-## Suggested order
+## New tool inventory
 
-| Phase | Scope | Risk if deferred | Status |
+| tool | purpose | writer | reader |
 |---|---|---|---|
-| 0 | 4 small fixes | Operator is actively misled today | ✅ DONE |
-| 1 | 7 correctness fixes | Silent wrong-context writes, permission bypass | ✅ DONE |
-| 4 | Test matrix | Everything above is unverifiable without it | ✅ DONE |
-| 2 | Flow redesign | Wasted stages, stuck workflows | ⬜ not started |
-| 3 | Perf + hygiene | Slow, cluttered, but correct | 1/6 done (repo-root test files moved) |
+| `wf_discuss` | Log Director↔User discussion checkpoint | director | any |
+| `wf_dispatch_note` (opt, Fix F) | Register in-flight subagent | director | any |
+| `wf_msg_wait` (opt, Fix J) | Block until peer bus message | any subagent | self |
 
-Phase 4 was landed third deliberately: Phases 0 and 1 shipped, then the tests that prove
-them were written, before touching the stage machine in Phase 2. Phase 2 (flow/design)
-is next up.
+New files:
+- `.workflow/<id>/discussion.md` — durable Director↔User transcript
+- `.workflow/<id>/inflight/*.json` — in-flight dispatch tracking (opt)
+- `.workflow/<id>/last-status.ts` — mtime cursor for unread bus count
+
+New config keys:
+- `autoResolveGateInUi` (default `false`) — Fix D
+- `requireDiscussionBeforeImpl` (default `true`) — Fix B soft-enforce toggle
+
+---
+
+## Skill/doc updates required
+
+- `skills/wf-director/SKILL.md`
+  - Rewrite "reason, don't flail" section to include: "Always discuss at kickoff / plan / arch / pre-impl / post-test / final. Use `wf_discuss` — it is durable, survives session death."
+  - Remove/soften "Do NOT ask the user 'want me to proceed?'" — replace with "Do not re-ask *within* an already-approved stage's routine progression; DO discuss at the 6 mandated checkpoints."
+  - Add kickoff discussion as Bootstrap step 2.5 (between `wf_intent` and Planner dispatch).
+- `agents/director.md`: drop `progress.md`. Add `wf_discuss` to tools list.
+- `docs/ARCHITECTURE.md`: add "Discussion Log" section next to "Director Intent Log".
+- `AGENTS.md`: fix Director writes column: `decisions.md`, `clarifications.md`, `intent.md`, `discussion.md`.
+- `README.md`: highlight "Director always discusses" as a design invariant.
+
+---
+
+## Order of implementation
+
+1. **G, C, F3-fix D (config-gated)** — safe cleanups, close security holes, no behaviour change unless opted-in.
+2. **A** — add `wf_discuss` tool + path + status display + skill updates.
+3. **B** — soft-enforce discussion before implementation.
+4. **E** — richer `wf_status` for resume.
+5. **F, I, J, K, H** — refinements.
+
+Tests to add:
+- `tests/discussion.test.mjs` — wf_discuss append/read/resume.
+- `tests/headless-relay.test.mjs` — no-UI director-relay requires note.
+- `tests/resume.test.mjs` — kill mid-run, resume, verify next-action + discussion visible.
+- Update `tests/hooks-approval-test.mjs` for new `autoResolveGateInUi` default.

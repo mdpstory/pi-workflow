@@ -20,7 +20,15 @@ fs.writeFileSync(
 	".pi/pi-workflow.json",
 	// architecture is in requireApproval so the P3 reject branch below is GUARANTEED to run —
 	// do not make that branch conditional on the decision, a false guard silently asserts nothing.
-	JSON.stringify({ skipStages: ["research"], requireApproval: ["task-breakdown", "architecture"], requirePreApproval: ["implementation"] }),
+	// autoResolveGateInUi: this whole file exercises the INLINE-resolve path, which is now
+	// opt-in (Fix D — default is advisory so the director's wf_approve stays authoritative).
+	JSON.stringify({
+		skipStages: ["research"],
+		requireApproval: ["task-breakdown", "architecture"],
+		requirePreApproval: ["implementation"],
+		autoResolveGateInUi: true,
+		requireDiscussionBeforeImpl: false,
+	}),
 );
 
 fs.writeFileSync(
@@ -31,6 +39,7 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export const isReadToolResult = () => false;");

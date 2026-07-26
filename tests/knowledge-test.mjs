@@ -38,11 +38,12 @@ export const Type = {
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
   Boolean: (o) => ({ type: "boolean", ...o }),
+  Number: (o) => ({ type: "number", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", `export const isReadToolResult = (e) => e && e.toolName === "read";`);
 
-const extModule = await jiti.import("/home/vivo/Notes/.pi/extensions/pi-workflow/index.ts");
+const extModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const factory = extModule.default || extModule;
 factory(api);
 
@@ -124,7 +125,8 @@ fs.mkdirSync(".pi", { recursive: true });
 fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ interceptReads: true }));
 res = await onResult(mkEvent({ path: "src/hot.ts" }), {});
 assert(res && res.content[0].text.includes("HOTNOTE"), "full read substituted with fresh fragment when interceptReads on");
-assert(res.content[0].text.includes("re-run read with an offset"), "substituted content carries escape-hatch header");
+assert(res.content[0].text.includes("re-run read with { offset: 1 }"), "substituted content carries escape-hatch header");
+assert(/about to EDIT/.test(res.content[0].text), "substituted content warns against editing from fragments (Fix H)");
 
 // escape hatch: offset present → raw source
 res = await onResult(mkEvent({ path: "src/hot.ts", offset: 1 }), {});
@@ -181,4 +183,18 @@ fs.writeFileSync("src/bypass.ts", "// bypass file CHANGED\n");
 block = await onCall({ toolName: "bash", input: { command: "cat src/bypass.ts" } }, {});
 assert(!block, "bash cat allowed once fragment is stale");
 
-console.log(process.exitCode ? "\n✗ some assertions FAILED" : "\n✓ all wf_knowledge assertions passed");
+// --- Fix H: engineer reading a tasks.md target gets RAW source (fragments would break edits) ---
+console.log("\n=== Fix H: engineer edit-target bypass ===");
+fs.mkdirSync(`.workflow/${process.env.PI_WORKFLOW_ID}/artifacts`, { recursive: true });
+fs.writeFileSync(`.workflow/${process.env.PI_WORKFLOW_ID}/artifacts/tasks.md`, "# tasks\n| T1 | patch src/target.ts | works | - |\n");
+fs.writeFileSync("src/target.ts", "// target file\n");
+process.env.PI_WORKFLOW_ROLE = "director";
+await call("wf_knowledge_put", { file: "src/target.ts", note: "TARGETNOTE: analyzed already", scope: "task" });
+process.env.PI_WORKFLOW_ROLE = "reviewer";
+res = await onResult(mkEvent({ path: "src/target.ts" }), {});
+assert(res && res.content[0].text.includes("TARGETNOTE"), "non-engineer roles still get the cached fragment");
+process.env.PI_WORKFLOW_ROLE = "engineer";
+res = await onResult(mkEvent({ path: "src/target.ts" }), {});
+assert(res === undefined, "engineer read of a tasks.md target is NOT intercepted");
+
+console.log(process.exitCode ? "\n✗ some assertions FAILED" : "\n✓ all wf_knowledge assertions passed (incl. Fix H)");

@@ -48,6 +48,53 @@ export function registerBusTools(pi: ExtensionAPI) {
 		},
 	});
 
+	// (Fix J / F6) Peer coordination, honestly scoped. The bus is fire-and-forget: engineer A
+	// can finish before engineer B ever posts, and nothing can make a one-shot spawned process
+	// stay alive waiting. wf_msg_wait only blocks THIS process for up to timeoutMs — use it for
+	// "I know a peer owes me an interface decision", not as a general sync primitive.
+	pi.registerTool({
+		name: "wf_msg_wait",
+		label: "wf_msg_wait",
+		description:
+			"Block up to timeoutMs waiting for a bus message addressed to your role (optionally from a specific role). Returns as soon as one arrives, or reports a timeout. NOT a cross-process sync guarantee — a peer that already exited will never post; on timeout, proceed or file a CLR.",
+		parameters: Type.Object({
+			from: Type.Optional(Type.String({ description: "only count messages from this role" })),
+			timeoutMs: Type.Optional(Type.Number({ description: "max wait in ms (default 30000, hard max 300000)" })),
+			since: Type.Optional(Type.String({ description: "ISO timestamp — only messages strictly after this (default: now)" })),
+		}),
+		async execute(_id, params, signal) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const r = role();
+			const since = params.since ?? new Date().toISOString();
+			const timeout = Math.min(Math.max(params.timeoutMs ?? 30_000, 0), 300_000);
+			const deadline = Date.now() + timeout;
+			const poll = () =>
+				[...readJsonl(busFile(r)), ...readJsonl(busFile("all"))]
+					.filter((m) => (m.ts as string) > since && (!params.from || m.from === params.from))
+					.sort((a, b) => (a.ts as string).localeCompare(b.ts as string));
+			for (;;) {
+				const hits = poll();
+				if (hits.length) {
+					return {
+						content: [{ type: "text", text: hits.map((m) => `[${m.ts}] ${m.from}→${m.to}: ${m.body}`).join("\n") }],
+						details: { ok: true, messages: hits, timedOut: false },
+					};
+				}
+				if (signal?.aborted || Date.now() >= deadline) break;
+				await new Promise((res) => setTimeout(res, 500));
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text: `no message${params.from ? ` from ${params.from}` : ""} within ${timeout}ms. The peer may have already exited — bus messages are fire-and-forget, not live sync. Proceed on your own best judgement or file wf_clr_open.`,
+					},
+				],
+				details: { ok: true, messages: [], timedOut: true },
+			};
+		},
+	});
+
 	pi.registerTool({
 		name: "wf_bus_digest",
 		label: "wf_bus_digest",
