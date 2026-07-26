@@ -41,14 +41,19 @@ async function confirmHumanVerdict(
 	stage: string,
 	sha: string | undefined,
 	verdict: string,
+	summary?: string,
 ): Promise<boolean> {
 	if (role() !== "director") return true; // unassigned session IS the human — nothing to relay
 	const anyCtx = ctx as { hasUI?: boolean; ui?: { confirm: (t: string, m: string) => Promise<boolean> } };
+	const stageLabel = stage.replace(/-/g, " ");
 	const shaPart = sha ? ` @ ${sha.slice(0, 7)}` : "";
+	const verb = verdict === "approve" ? "Approve" : "Reject";
 	if (anyCtx?.hasUI && anyCtx.ui?.confirm) {
+		const cleaned = summary?.replace(/\n## question[\s\S]*$/, "") ?? "";
+		const detail = cleaned ? `\n\n${cleaned}` : "";
 		return anyCtx.ui.confirm(
 			"pi-workflow",
-			`Director is relaying human verdict "${verdict}" for ${tool}(stage="${stage}"${shaPart}). Confirm this is what the human actually decided.`,
+			`The Director wants to ${verb.toLowerCase()} \"${stageLabel}\".${detail}\n\nIs this what you decided?`,
 		);
 	}
 	fs.appendFileSync(
@@ -357,9 +362,10 @@ export function registerStageTools(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_approve");
 			if (blocked) return deny(blocked.msg);
-			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict);
-			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			const state = loadState();
+			const summary = state.pendingApproval?.summary;
+			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict, summary);
+			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
 				return deny(`no matching pending approval for stage=${params.stage} sha=${params.sha}`);
 			}
@@ -423,9 +429,10 @@ export function registerStageTools(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_continue");
 			if (blocked) return deny(blocked.msg);
-			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict);
-			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			const state = loadState();
+			const summary = state.pendingPreApproval?.summary;
+			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict, summary);
+			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {
 				return deny(`no matching pre-approval for nextStage=${params.stage}`);
 			}
