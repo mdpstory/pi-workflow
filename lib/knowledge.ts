@@ -11,7 +11,9 @@ import { knowledgeDir } from "./paths.ts";
 const MAX_FRESH_PER_SCOPE = 3;
 
 // Collect fresh (mtime+size still matching the on-disk source) fragments for a file.
-export function freshFragments(file: string): { sections: string[]; staleCount: number } {
+// `only` restricts the scan to one scope — used by listCoverage so a task row's fresh flag
+// reflects task fragments, not a fresh general fragment for the same file.
+export function freshFragments(file: string, only?: "general" | "task"): { sections: string[]; staleCount: number } {
 	let curMtime = "";
 	let curSize = "";
 	try {
@@ -27,7 +29,7 @@ export function freshFragments(file: string): { sections: string[]; staleCount: 
 		["general", "General (repo-wide)"],
 		["task", "Task-specific (this workflow)"],
 	];
-	for (const [scope, label] of scopes) {
+	for (const [scope, label] of scopes.filter(([s]) => !only || s === only)) {
 		const dir = knowledgeDir(file, scope);
 		let files: string[] = [];
 		try {
@@ -104,7 +106,7 @@ function scanKnowledgeRoot(root: string, scope: "general" | "task"): CoverageRow
 		} catch {
 			// fall back to sanitized dir name
 		}
-		const { sections } = freshFragments(file);
+		const { sections } = freshFragments(file, scope);
 		rows.push({ file, scope, fragments: files.length, fresh: sections.length > 0 });
 	}
 	return rows;
