@@ -1,7 +1,7 @@
 // ---- extension hooks: tool_call (ceiling + role/CLR write gate), tool_result (P1-2 read interception) ----
 import { isReadToolResult } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { wfNamespaceRel, isPathAllowedForRole } from "./lib/access.ts";
+import { wfNamespaceRel, isPathAllowedForRole, isPathReadableByRole } from "./lib/access.ts";
 import { bumpToolCalls, currentToolCalls, resetToolCalls, TOOL_CAP } from "./lib/ceiling.ts";
 import { loadConfig, requirePreApprovalSet, skipStagesSet } from "./lib/config.ts";
 import { relFromRepo, artifactsDir } from "./lib/paths.ts";
@@ -65,15 +65,38 @@ export function registerHooks(pi: ExtensionAPI) {
 		// the tool_result hook (which only covers `read`) — nudge back to read/wf_knowledge_get.
 		// Regex-scoped and easy to bypass on purpose (e.g. `grep -A200`, piping through xargs);
 		// this targets the habitual case, not a security boundary.
-		if (event.toolName === "bash" && workflowActive() && loadConfig().interceptReads) {
+		if (event.toolName === "bash" && workflowActive()) {
 			const cmd = (event.input as { command?: string }).command ?? "";
 			const m = /^\s*(?:cat|head|tail|sed\s+-n)\b[^|&;]*?([^\s|&;]+)\s*$/.exec(cmd);
 			if (m) {
 				const rel = relFromRepo(m[1]);
 				if (!rel.startsWith("..") && !rel.startsWith(".workflow/")) {
-					const { sections } = freshFragments(rel);
-					if (sections.length) {
-						return { block: true, reason: `pi-workflow: use read/wf_knowledge_get — cached analysis exists for ${rel}` };
+					if (loadConfig().interceptReads) {
+						const { sections } = freshFragments(rel);
+						if (sections.length) {
+							return { block: true, reason: `pi-workflow: use read/wf_knowledge_get — cached analysis exists for ${rel}` };
+						}
+					}
+				} else if (rel.startsWith(".workflow/")) {
+					// Read isolation: block bash reads of foreign workflow namespaces
+					const readCheck = isPathReadableByRole(role(), rel);
+					if (!readCheck.ok) {
+						return { block: true, reason: `pi-workflow: ${readCheck.reason}` };
+					}
+				}
+			}
+		}
+
+		// Read isolation: subagents (non-director roles) cannot read other workflow
+		// namespaces. Each workflow can only see its own artifacts and .workflow/shared/.
+		if (event.toolName === "read" && workflowActive()) {
+			const p = (event.input as { path?: string }).path;
+			if (p) {
+				const rel = relFromRepo(p);
+				if (!rel.startsWith("..")) {
+					const readCheck = isPathReadableByRole(role(), rel);
+					if (!readCheck.ok) {
+						return { block: true, reason: `pi-workflow: ${readCheck.reason}` };
 					}
 				}
 			}

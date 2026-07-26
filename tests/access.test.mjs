@@ -12,7 +12,7 @@ const root = path.join(here, "..");
 const jiti = createJiti(import.meta.url, { interopDefault: true });
 
 process.env.PI_WORKFLOW_ID = "wf-test-access";
-const { isPathAllowedForRole } = await jiti.import(path.join(root, "lib/access.ts"));
+const { isPathAllowedForRole, isPathReadableByRole } = await jiti.import(path.join(root, "lib/access.ts"));
 
 const ID = "wf-test-access";
 
@@ -98,4 +98,43 @@ test("path traversal inside namespace resolves via inner string, still gated nor
 	// the inner string. A traversal attempt inside the artifacts/ prefix still fails the
 	// per-role filename allowlist unless it happens to match an owned artifact name exactly.
 	assert.equal(allowed("planner", `.workflow/${ID}/artifacts/../../../etc/passwd`), false);
+});
+
+// ---- isPathReadableByRole tests ----
+function readable(role, p) {
+	return isPathReadableByRole(role, p).ok;
+}
+
+test("read isolation: subagents can read own workflow", () => {
+	assert.equal(readable("engineer", `.workflow/${ID}/artifacts/tasks.md`), true);
+	assert.equal(readable("planner", `.workflow/${ID}/artifacts/plan.md`), true);
+	assert.equal(readable("scout", `.workflow/${ID}/artifacts/research.md`), true);
+	assert.equal(readable("reviewer", `.workflow/${ID}/artifacts/review.md`), true);
+	assert.equal(readable("qa", `.workflow/${ID}/artifacts/test-report.md`), true);
+});
+
+test("read isolation: subagents can read shared namespace", () => {
+	assert.equal(readable("engineer", ".workflow/shared/artifacts/architecture.md"), true);
+	assert.equal(readable("planner", ".workflow/shared/artifacts/architecture.md"), true);
+	assert.equal(readable("scout", ".workflow/shared/knowledge/some-file/fragment.md"), true);
+});
+
+test("read isolation: subagents CANNOT read foreign workflow namespace", () => {
+	assert.equal(readable("engineer", ".workflow/foreign-id/artifacts/plan.md"), false);
+	assert.equal(readable("planner", ".workflow/foreign-id/state.json"), false);
+	assert.equal(readable("scout", ".workflow/foreign-id/bus/director.jsonl"), false);
+	assert.equal(readable("reviewer", ".workflow/foreign-id/artifacts/review.md"), false);
+	assert.equal(readable("qa", ".workflow/foreign-id/artifacts/test-report.md"), false);
+	assert.equal(readable("architect", ".workflow/foreign-id/artifacts/decisions.md"), false);
+});
+
+test("read isolation: director CAN read foreign workflow namespace", () => {
+	assert.equal(readable("director", ".workflow/foreign-id/artifacts/plan.md"), true);
+	assert.equal(readable("director", ".workflow/foreign-id/state.json"), true);
+});
+
+test("read isolation: source files always readable", () => {
+	assert.equal(readable("engineer", "src/foo.ts"), true);
+	assert.equal(readable("planner", "README.md"), true);
+	assert.equal(readable("scout", "docs/guide.md"), true);
 });

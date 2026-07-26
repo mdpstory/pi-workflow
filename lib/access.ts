@@ -2,6 +2,22 @@
 import { ARTIFACT_MDS, ROLE_ALLOW, SHARED_ARTIFACTS } from "./constants.ts";
 import { workflowId } from "./identity.ts";
 
+// ---- read gating logic ----
+// Subagents (non-director roles) may only read:
+//   - Their own workflow namespace (.workflow/<own-id>/...)
+//   - Shared namespace (.workflow/shared/...)
+//   - Source files outside .workflow/
+// Foreign workflow namespaces (.workflow/<other-id>/...) are always blocked.
+// Director is exempt — it needs cross-workflow visibility for orchestration.
+export function isPathReadableByRole(r: string, relPath: string): { ok: boolean; reason?: string } {
+	const ns = wfNamespaceRel(relPath);
+	if (!ns.inside) return { ok: true }; // source file or outside repo — no restriction
+	if (ns.kind === "own" || ns.kind === "shared") return { ok: true }; // own workflow or shared — always ok
+	// Foreign namespace: only director may read
+	if (r === "director") return { ok: true };
+	return { ok: false, reason: `path belongs to a different workflow namespace than PI_WORKFLOW_ID=${workflowId()}. Subagents may only read their own workflow and .workflow/shared/.` };
+}
+
 // Returns the path relative to the relevant .workflow/ namespace:
 //   "own"    — this session's .workflow/<id>/... (foreign=false)
 //   "shared" — .workflow/shared/... (codebase-level artifacts like architecture.md,
