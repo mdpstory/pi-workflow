@@ -7,7 +7,7 @@ import { currentGitSha, stampArchitecture } from "../lib/architecture.ts";
 import { ARTIFACT_MDS, SHARED_ARTIFACTS } from "../lib/constants.ts";
 import { role, workflowId } from "../lib/identity.ts";
 import { isPathAllowedForRole } from "../lib/access.ts";
-import { isPidAlive, readLock } from "../lib/lock.ts";
+import { lockLiveness, readLock } from "../lib/lock.ts";
 import { artifactPath } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
 import { clrBlocksStage, loadClr, loadState } from "../lib/state.ts";
@@ -23,7 +23,13 @@ export function registerStatusTools(pi: ExtensionAPI) {
 			const clr = loadClr();
 			const lock = readLock();
 			const lockLine = lock
-				? `lock: pid ${lock.pid} on ${lock.host} (${isPidAlive(lock.pid) ? "ALIVE" : "STALE — will be reclaimed"}), started ${lock.startedAt}`
+				? `lock: pid ${lock.pid} on ${lock.host} (${
+						lockLiveness(lock) === "alive"
+							? "ALIVE"
+							: lockLiveness(lock) === "unknown-foreign-host"
+								? "UNKNOWN — foreign host, will not be silently reclaimed"
+								: "STALE — will be reclaimed"
+					}), started ${lock.startedAt}`
 				: "lock: none";
 			const lines = [
 				`role: ${role()}`,
@@ -31,6 +37,7 @@ export function registerStatusTools(pi: ExtensionAPI) {
 				`current: ${state.current ?? "—"}`,
 				`open CLRs: ${clr.open.length ? clr.open.map((c) => `${c.id}(${c.stage})`).join(", ") : "none"}`,
 				`pending approval: ${state.pendingApproval ? `${state.pendingApproval.stage} @ ${state.pendingApproval.sha}` : "none"}`,
+				`pending pre-approval: ${state.pendingPreApproval ? `${state.pendingPreApproval.nextStage} (after ${state.pendingPreApproval.completedStage} @ ${state.pendingPreApproval.sha})` : "none"}`,
 				lockLine,
 				"",
 			];

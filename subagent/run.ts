@@ -43,6 +43,8 @@ export interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	/** Reserved env keys the caller tried to set (PI_WORKFLOW_ROLE etc.) — silently dropped otherwise (P0-1). */
+	droppedEnvKeys?: string[];
 	/** In-progress text the model is currently emitting (word-by-word), cleared once folded into messages. */
 	liveText?: string;
 	/** In-progress tool call whose arguments are still streaming in (e.g. a `write` mid-generation). */
@@ -195,7 +197,7 @@ export function buildChildEnv(
 	agentName: string,
 	agent: AgentConfig,
 	extraEnv: Record<string, string> | undefined,
-): { env: NodeJS.ProcessEnv; error?: undefined } | { env?: undefined; error: string } {
+): { env: NodeJS.ProcessEnv; droppedKeys: string[]; error?: undefined } | { env?: undefined; droppedKeys?: undefined; error: string } {
 	const parentDepth = Number.parseInt(process.env.PI_SUBAGENT_DEPTH ?? "0", 10) || 0;
 	const maxDepth = Number.parseInt(process.env.PI_SUBAGENT_MAX_DEPTH ?? "", 10) || DEFAULT_MAX_SUBAGENT_DEPTH;
 	const childDepth = parentDepth + 1;
@@ -211,10 +213,15 @@ export function buildChildEnv(
 	};
 
 	// Caller-supplied env first, with identity/limit keys stripped — it may not
-	// override anything set below.
+	// override anything set below. Track which reserved keys were dropped so the
+	// caller can be warned instead of silently ignored (P0-1).
+	const droppedKeys: string[] = [];
 	if (extraEnv) {
 		for (const [k, v] of Object.entries(extraEnv)) {
-			if (RESERVED_ENV_KEYS.has(k)) continue;
+			if (RESERVED_ENV_KEYS.has(k)) {
+				droppedKeys.push(k);
+				continue;
+			}
 			env[k] = v;
 		}
 	}
@@ -235,7 +242,7 @@ export function buildChildEnv(
 	const workflowId = process.env.PI_WORKFLOW_ID ?? readActiveWorkflowId(childCwd);
 	if (workflowId) env.PI_WORKFLOW_ID = workflowId;
 
-	return { env };
+	return { env, droppedKeys };
 }
 
 export async function runSingleAgent(
@@ -283,6 +290,7 @@ export async function runSingleAgent(
 		};
 	}
 	const childEnv = depthCheck.env;
+	const droppedEnvKeys = depthCheck.droppedKeys;
 
 	const selectedModel = overrideModel || agent.model;
 
@@ -494,6 +502,12 @@ export async function runSingleAgent(
 		parentModel !== selectedModel
 	) {
 		result = await spawnWithModel(parentModel);
+	}
+
+	if (droppedEnvKeys.length > 0) {
+		result.droppedEnvKeys = droppedEnvKeys;
+		const warning = `pi-workflow: ignored reserved env key(s) from caller: ${droppedEnvKeys.join(", ")}. Identity comes from the dispatched agent's workflowRole frontmatter, not caller-supplied env — this had no effect.`;
+		result.stderr = result.stderr ? `${warning}\n${result.stderr}` : warning;
 	}
 
 	return result;

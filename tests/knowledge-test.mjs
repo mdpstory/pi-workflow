@@ -12,6 +12,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-knowledge-"));
+process.env.HOME = sandbox; // isolate from real ~/.pi/agent/pi-workflow.json (config leaks via os.homedir())
 process.chdir(sandbox);
 console.log("sandbox:", sandbox);
 
@@ -36,6 +37,7 @@ export const Type = {
   Object: (s) => ({ type: "object", properties: s }),
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
+  Boolean: (o) => ({ type: "boolean", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", `export const isReadToolResult = (e) => e && e.toolName === "read";`);
@@ -92,9 +94,14 @@ assert(/stale/i.test(g.content[0].text), "stale-count note surfaced");
 
 console.log("\n=== D: general vs task scope route to distinct storage roots ===");
 await call("wf_knowledge_put", { file: "src/file2.ts", note: "durable general note", scope: "general" });
-assert(fs.existsSync(".workflow/shared/knowledge/src__file2.ts"), "general-scope fragment under .workflow/shared/knowledge/");
-const taskDirFiles = fs.readdirSync(".workflow/parallel-feat/knowledge/src__file2.ts");
-assert(taskDirFiles.every((f) => !fs.readFileSync(path.join(".workflow/parallel-feat/knowledge/src__file2.ts", f), "utf8").includes("durable general note")), "general-scope note NOT duplicated into task-scope storage");
+// (P1-3) fragment dirs are now `<sanitized-basename>-<sha1(file).slice(0,8)>`, not a bare
+// sanitized name — discover the actual dir instead of hardcoding the old collision-prone name.
+const sharedKnowledgeEntries = fs.readdirSync(".workflow/shared/knowledge");
+const file2Dir = sharedKnowledgeEntries.find((d) => d.startsWith("src__file2.ts-"));
+assert(file2Dir, "general-scope fragment under .workflow/shared/knowledge/<file2 fragment dir>");
+const taskDirPath = path.join(".workflow/parallel-feat/knowledge", file2Dir);
+const taskDirFiles = fs.existsSync(taskDirPath) ? fs.readdirSync(taskDirPath) : [];
+assert(taskDirFiles.every((f) => !fs.readFileSync(path.join(taskDirPath, f), "utf8").includes("durable general note")), "general-scope note NOT duplicated into task-scope storage");
 g = await call("wf_knowledge_get", { file: "src/file2.ts" });
 assert(g.content[0].text.includes("durable general note"), "general-scope fragment retrievable via wf_knowledge_get");
 assert(/General \(repo-wide\)/.test(g.content[0].text), "general fragment labeled as repo-wide");

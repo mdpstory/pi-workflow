@@ -30,7 +30,11 @@ export function registerHooks(pi: ExtensionAPI) {
 		// wf_clr_open/intercom), and then re-exempted wf_clr_open/intercom from it — so it
 		// could only ever fire for write/edit, the opposite of "stop everything but let the
 		// agent escalate."
-		const HARD_STOP_EXEMPT = ["wf_clr_open", "wf_msg_post"];
+		// wf_stage_start/wf_stage_complete/wf_status must survive the hard stop too —
+		// wf_stage_start is the only caller of resetToolCalls(), so without this a
+		// director that burns past the hard ceiling inside one stage can never start
+		// the next stage (or even check status) and needs a process restart (P0-2).
+		const HARD_STOP_EXEMPT = ["wf_clr_open", "wf_msg_post", "wf_stage_start", "wf_stage_complete", "wf_status"];
 		const CEILING_EXEMPT = ["write", "edit", "wf_clr_open", "wf_msg_post", "intercom"];
 		if (workflowActive() && toolCalls > TOOL_CAP + 5) {
 			if (!HARD_STOP_EXEMPT.includes(event.toolName)) {
@@ -106,9 +110,9 @@ export function registerHooks(pi: ExtensionAPI) {
 	// --- tool_result hook: P1-2 mechanical read interception (opt-in) ---
 	// Unlike tool_call (block-only), tool_result CAN substitute a tool's content. When
 	// config.interceptReads is on and a role is active, a full-file `read` of a source that
-	// already has FRESH knowledge fragments (mtime+size match) returns the fragment(s)
-	// instead of the raw body — the token win the plan wanted, enforced mechanically.
-	// Guardrails (why this is safe + opt-in, not default):
+	// already has FRESH knowledge fragments (mtime+size+content-hash match) returns the
+	// fragment(s) instead of the raw body — the token win the plan wanted, enforced
+	// mechanically. Guardrails (why this is safe):
 	//   - Only full reads are intercepted. Passing offset OR limit is the escape hatch that
 	//     always yields raw source (an engineer about to edit a file reads a slice / uses
 	//     offset:1 to force the real bytes).
@@ -124,7 +128,7 @@ export function registerHooks(pi: ExtensionAPI) {
 		if (rel.startsWith("..") || rel.startsWith(".workflow/")) return undefined;
 		const { sections } = freshFragments(rel);
 		if (!sections.length) return undefined;
-		const header = `cached analysis (mtime+size still match) — re-run read with an offset to force raw source.\n\n`;
+		const header = `cached analysis (source unchanged — hash-verified) — re-run read with an offset to force raw source.\n\n`;
 		return { content: [{ type: "text", text: header + sections.join("\n\n") }] };
 	});
 }

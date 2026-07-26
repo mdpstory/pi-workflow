@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { STAGES, type Stage } from "../lib/constants.ts";
-import { requireDirector, role } from "../lib/identity.ts";
+import { STAGES, stageIndex, type Stage } from "../lib/constants.ts";
+import { requireDirector, role, workflowActive } from "../lib/identity.ts";
 import { writeJson } from "../lib/io.ts";
 import { artifactsDir, clrIndexPath } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
@@ -16,23 +16,34 @@ export function registerClrTools(pi: ExtensionAPI) {
 		label: "wf_clr_open",
 		description: "File a clarification request. Halts caller. Any role.",
 		parameters: Type.Object({
-			stage: StringEnum([...STAGES]),
+			stage: Type.Optional(StringEnum([...STAGES])),
 			question: Type.String(),
 		}),
 		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
+			const state = loadState();
+			// (P1-1) `stage` used to be free-form caller input: an agent could file against a
+			// *downstream* stage and keep writing, since clrBlocksStage only gates idx <= curIdx.
+			// Default to the workflow's actual current stage, and reject an explicit stage
+			// strictly later than current — filing ahead of where the workflow is cannot halt
+			// anything, so it isn't a meaningful CLR, it's an opt-out.
+			const stage = params.stage ?? state.current;
+			if (!stage) return deny("no current stage and no explicit stage given — workflow has no in-progress stage to file against");
+			if (state.current && stageIndex(stage) > stageIndex(state.current)) {
+				return deny(`stage "${stage}" is downstream of current stage "${state.current}" — a CLR filed there would block nothing; omit \`stage\` to file against the current stage, or file once that stage is actually reached`);
+			}
 			const id = `CLR-${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
 			const clr = loadClr();
-			clr.open.push({ id, stage: params.stage, raisedBy: role() });
+			clr.open.push({ id, stage, raisedBy: role() });
 			writeJson(clrIndexPath(), clr);
-			const entry = `\n## ${id}\n- Status: OPEN\n- Raised by: ${role()}\n- Stage: ${params.stage}\n- Question: ${params.question}\n- Resolution: _pending_\n- Resolved by: _pending_\n`;
+			const entry = `\n## ${id}\n- Status: OPEN\n- Raised by: ${role()}\n- Stage: ${stage}\n- Question: ${params.question}\n- Resolution: _pending_\n- Resolved by: _pending_\n`;
 			const clrFile = path.join(artifactsDir(), "clarifications.md");
 			fs.appendFileSync(clrFile, entry);
 			// mark stage blocked — but only if it isn't already "done". Filing a CLR against
 			// a stage the workflow has already progressed past shouldn't retroactively flip
 			// its recorded status backward and corrupt the audit trail; the open CLR still
 			// blocks all further writes via clrBlocksStage regardless of this status field.
-			const state = loadState();
-			const target = state.stages[params.stage as Stage];
+			const target = state.stages[stage as Stage];
 			if (target && target.status !== "done") {
 				target.status = "blocked";
 				saveState(state);
@@ -82,6 +93,7 @@ export function registerClrTools(pi: ExtensionAPI) {
 		description: "Record a failed attempt for <key> (e.g. CLR id or defect slug). Returns OK, DIRECTOR_RULE at 3 bumps, or HUMAN if key already has 3 rulings. Same-bug key spans Review+QA loops.",
 		parameters: Type.Object({ key: Type.String({ description: "stable defect / CLR key" }) }),
 		async execute(_id, params) {
+			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
 			const state = loadState();
 			const rec = state.rulings[params.key] ?? { bumps: 0, ruled: 0 };
 			if (rec.ruled >= 3) {

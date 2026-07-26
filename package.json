@@ -4,6 +4,9 @@
   "description": "Role-enforced, stage-gated AI workflow extension for pi. Implements ai-workflow-specification.md.",
   "keywords": ["pi-package"],
   "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs && for f in tests/spike-test.mjs tests/concurrency-test.mjs tests/preapproval-test.mjs tests/knowledge-test.mjs tests/e2e-toy.mjs; do node \"$f\" || exit 1; done"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"

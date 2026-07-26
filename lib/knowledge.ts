@@ -1,5 +1,6 @@
 // ---- knowledge fragment helpers (P1-1, P1-2) ----
 // Shared by wf_knowledge_get and the P1-2 read-interception hook.
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { repoRoot, wfRoot } from "./base-paths.ts";
@@ -16,13 +17,27 @@ const MAX_FRESH_PER_SCOPE = 3;
 export function freshFragments(file: string, only?: "general" | "task"): { sections: string[]; staleCount: number } {
 	let curMtime = "";
 	let curSize = "";
+	const abs = path.resolve(repoRoot(), file);
 	try {
-		const st = fs.statSync(path.resolve(repoRoot(), file));
+		const st = fs.statSync(abs);
 		curMtime = String(st.mtimeMs);
 		curSize = String(st.size);
 	} catch {
 		// missing source — everything reads as stale, which is correct
 	}
+	// (P1-4) mtime+size is a cheap pre-filter only, not the freshness verdict — a same-size
+	// edit or a git checkout that preserves mtime would otherwise be served as fresh. The
+	// content hash is computed once, lazily, only when mtime+size already match.
+	let curHash: string | null = null;
+	const getCurHash = (): string => {
+		if (curHash !== null) return curHash;
+		try {
+			curHash = crypto.createHash("sha1").update(fs.readFileSync(abs)).digest("hex");
+		} catch {
+			curHash = "";
+		}
+		return curHash;
+	};
 	const sections: string[] = [];
 	let staleCount = 0;
 	const scopes: Array<["general" | "task", string]> = [
@@ -49,7 +64,10 @@ export function freshFragments(file: string, only?: "general" | "task"): { secti
 				if (idx === -1) continue;
 				meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
 			}
-			if (curMtime && meta.mtime === curMtime && meta.size === curSize) {
+			// Fragments written before hash tracking existed carry no `hash:` line — treat
+			// them as stale rather than trusting mtime+size alone (that trust is exactly the
+			// bug this fixes).
+			if (curMtime && meta.mtime === curMtime && meta.size === curSize && meta.hash && meta.hash === getCurHash()) {
 				const body = fm[2].trim();
 				all.push({ written: meta.written ?? "?", text: `### ${meta.role ?? "?"} @ ${meta.written ?? "?"}\n${body}`, body });
 			} else {

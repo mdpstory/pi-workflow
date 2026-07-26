@@ -1,12 +1,13 @@
 // ---- wf_claim / wf_new / wf_list / wf_init ----
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { wfRoot } from "../lib/base-paths.ts";
 import { ARTIFACT_MDS } from "../lib/constants.ts";
 import { claimRole, currentSessionId, markerPath, mintId, requireDirector, setSessionId, workflowId } from "../lib/identity.ts";
-import { isPidAlive, type LockInfo, readLock, acquireOrCheckLock } from "../lib/lock.ts";
+import { lockLiveness, type LockInfo, readLock, acquireOrCheckLock } from "../lib/lock.ts";
 import { readJson, writeJson } from "../lib/io.ts";
 import { artifactPath, artifactsDir, clrIndexPath, repoRoot, sharedArtifactsDir } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
@@ -72,7 +73,14 @@ export function registerLifecycleTools(pi: ExtensionAPI) {
 			const lines = ids.map((id) => {
 				const st = readJson<WfState | null>(path.join(root, id, "state.json"), null);
 				const lock = readJson<LockInfo | null>(path.join(root, id, "director.lock"), null);
-				const lockStr = lock ? (isPidAlive(lock.pid) ? `ALIVE pid ${lock.pid}` : "STALE") : "none";
+				const liveness = lock ? lockLiveness(lock) : null;
+				const lockStr = lock
+					? liveness === "alive"
+						? `ALIVE pid ${lock.pid}`
+						: liveness === "unknown-foreign-host"
+							? `UNKNOWN pid ${lock.pid} on foreign host ${lock.host}`
+							: "STALE"
+					: "none";
 				const marker = id === (currentSessionId() ?? "") ? " (this session)" : "";
 				return `${id}${marker}: current=${st?.current ?? "—"} lock=${lockStr}`;
 			});
@@ -84,8 +92,10 @@ export function registerLifecycleTools(pi: ExtensionAPI) {
 		name: "wf_init",
 		label: "wf_init",
 		description: "Initialize .workflow/ state and stub artifacts. Director only.",
-		parameters: Type.Object({}),
-		async execute(_id, _params, _signal, _onUpdate, ctx) {
+		parameters: Type.Object({
+			forceReclaimForeignLock: Type.Optional(Type.Boolean({ description: "explicit override to reclaim a lock reported UNKNOWN (foreign host) — only pass this after confirming with the user that no other machine is actually running this workflow" })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const denied = requireDirector();
 			if (denied) return deny(denied.msg);
 			fs.mkdirSync(artifactsDir(), { recursive: true });
@@ -108,15 +118,24 @@ export function registerLifecycleTools(pi: ExtensionAPI) {
 			} else {
 				fs.writeFileSync(gitignorePath, ".workflow/\n");
 			}
-			const foreign = acquireOrCheckLock();
+			const foreign = acquireOrCheckLock(params.forceReclaimForeignLock === true);
 			if (foreign) {
+				// (P1-7) Distinguish "definitely another live director, same host" from "lock's
+				// host doesn't match this one" — the latter is ambiguous (could be a real live
+				// process on another machine sharing this checkout, or a stale lock nobody ever
+				// cleaned up) and must not be silently reclaimed OR silently treated as blocking
+				// forever. Requires an explicit forceReclaimForeignLock:true to override.
+				const liveness = lockLiveness(foreign);
+				const foreignHostMsg = liveness === "unknown-foreign-host"
+					? `UNKNOWN (foreign host "${foreign.host}" ≠ this host "${os.hostname()}") — could be a live process on another machine sharing this checkout, or a stale lock. If you've confirmed no other machine is running this workflow, retry with forceReclaimForeignLock: true.`
+					: `pid ${foreign.pid} on ${foreign.host} is ALIVE`;
 				return {
 					content: [{
 						type: "text",
-						text: `BLOCKED: another director session is already running workflow "${workflowId()}" (pid ${foreign.pid} on ${foreign.host}, started ${foreign.startedAt}). ` +
-							`If that session is dead, it will self-clear next time this is called. To work on a second feature in parallel in this same repo, call wf_new (or set a distinct PI_WORKFLOW_ID, e.g. PI_WORKFLOW_ID=notifications) before calling wf_init — each id gets its own isolated .workflow/<id>/ lock, state, and artifacts. Alternatively use a separate git worktree.`,
+						text: `BLOCKED: another director session may already be running workflow "${workflowId()}" (${foreignHostMsg}, started ${foreign.startedAt}). ` +
+							`If that session is dead (same-host case), it will self-clear next time this is called. To work on a second feature in parallel in this same repo, call wf_new (or set a distinct PI_WORKFLOW_ID, e.g. PI_WORKFLOW_ID=notifications) before calling wf_init — each id gets its own isolated .workflow/<id>/ lock, state, and artifacts. Alternatively use a separate git worktree.`,
 					}],
-					details: { ok: false, decision: "LOCKED", lock: foreign },
+					details: { ok: false, decision: "LOCKED", lock: foreign, liveness },
 				};
 			}
 			const state = loadState();

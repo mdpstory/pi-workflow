@@ -1,4 +1,5 @@
 // ---- wf_knowledge_put / wf_knowledge_get (P1-1) ----
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
@@ -24,14 +25,21 @@ export function registerKnowledgeTools(pi: ExtensionAPI) {
 			fs.mkdirSync(dir, { recursive: true });
 			let mtime = "";
 			let size = "";
+			let hash = "";
 			try {
-				const st = fs.statSync(path.resolve(repoRoot(), params.file));
+				const abs = path.resolve(repoRoot(), params.file);
+				const st = fs.statSync(abs);
 				mtime = String(st.mtimeMs);
 				size = String(st.size);
+				hash = crypto.createHash("sha1").update(fs.readFileSync(abs)).digest("hex");
 			} catch {
 				// source file doesn't exist (yet, or was deleted) — fragment is always stale on read
 			}
-			const frag = `---\nfile: ${params.file}\nrole: ${role()}\nmtime: ${mtime}\nsize: ${size}\nwritten: ${new Date().toISOString()}\n---\n${params.note.trim()}\n`;
+			// (P1-4) hash is the authoritative freshness check — mtime/size are a cheap
+			// pre-filter only (freshFragments hashes the source and compares before trusting
+			// them). A same-size character swap, or a git checkout that preserves mtime,
+			// must not be served as fresh.
+			const frag = `---\nfile: ${params.file}\nrole: ${role()}\nmtime: ${mtime}\nsize: ${size}\nhash: ${hash}\nwritten: ${new Date().toISOString()}\n---\n${params.note.trim()}\n`;
 			const name = `${process.pid}-${Date.now()}-${role()}.md`;
 			const tmp = path.join(dir, `.tmp-${name}`);
 			fs.writeFileSync(tmp, frag);

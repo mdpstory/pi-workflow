@@ -21,6 +21,7 @@ process.env.PI_WORKFLOW_ID = "default";
 
 // ---- sandbox git repo ----
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-e2e-"));
+process.env.HOME = sandbox; // isolate from real ~/.pi/agent/pi-workflow.json (config leaks via os.homedir())
 process.chdir(sandbox);
 fs.mkdirSync(".pi", { recursive: true });
 fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ skipStages: [] }));
@@ -35,6 +36,7 @@ export const Type = {
   Object: (s) => ({ type: "object", properties: s }),
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
+  Boolean: (o) => ({ type: "boolean", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
@@ -55,7 +57,7 @@ const jiti = createJiti(import.meta.url, {
 		"@earendil-works/pi-coding-agent": path.join(sandbox, "__stub_pi_agent.mjs"),
 	},
 });
-const extModule = await jiti.import(new URL("./index.ts", import.meta.url).pathname);
+const extModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 const factory = extModule.default || extModule;
 factory(api);
 console.log("tools registered:", [...tools.keys()].join(", "));
@@ -259,10 +261,13 @@ Mount route before auth middleware. Avoids token check on health probes.
 Alternative: separate unauthenticated router — rejected (overkill for one route).
 `);
 
-// Architect appends to decisions.md
+// (P1-6) decisions.md is the director's rulings log now — architect writes design
+// rationale to its own design-decisions.md instead, so it can never overwrite a ruling.
 h = await hook("write", { path: ".workflow/default/artifacts/decisions.md" });
-assert(!h?.block, "architect may append decisions.md");
-fs.appendFileSync(".workflow/default/artifacts/decisions.md", `
+assert(h?.block, "architect BLOCKED from writing decisions.md (director's rulings log)");
+h = await hook("write", { path: ".workflow/default/artifacts/design-decisions.md" });
+assert(!h?.block, "architect may append design-decisions.md");
+fs.appendFileSync(".workflow/default/artifacts/design-decisions.md", `
 ## design: /health before auth
 Mount /health before auth guard. Auth guard currently in createApp() at line ~30.
 Alternative (separate unauth router) rejected — too heavy for one route.

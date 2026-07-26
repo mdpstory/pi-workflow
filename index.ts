@@ -30,11 +30,14 @@
  * Bus (P2): .workflow/<id>/bus/<role>.jsonl, see wf_msg_post/poll/wf_bus_digest.
  *
  * P1-2 (mechanical read interception): implemented via the `tool_result` hook (which CAN
- * substitute a tool's content — unlike `tool_call`, which is block-only). Opt-in through
- * config `interceptReads`. A full-file `read` of a source with fresh (mtime+size matching)
- * knowledge fragments returns the fragment(s) instead of the raw body; passing offset/limit
- * is the escape hatch for raw source. Off by default because it changes read semantics.
- * wf_knowledge_get remains the explicit path and works regardless of the flag.
+ * substitute a tool's content — unlike `tool_call`, which is block-only). Controlled by
+ * config `interceptReads`, default true (see lib/config.ts) now that freshness is
+ * content-hash verified (P1-4), not mtime+size alone — a same-size edit or a git checkout
+ * that preserves mtime can no longer be served as stale-but-reported-fresh. A full-file
+ * `read` of a source with fresh fragments returns the fragment(s) instead of the raw body;
+ * passing offset/limit is the escape hatch for raw source. Set `interceptReads: false` to
+ * restore old read semantics. wf_knowledge_get remains the explicit path and works
+ * regardless of the flag.
  *
  * Module layout:
  *   lib/      — pure state/path/config helpers, no tool registration.

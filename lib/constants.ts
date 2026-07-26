@@ -51,7 +51,11 @@ export const ROLE_ALLOW: Record<string, RegExp[]> = {
 	director: [/^artifacts\/decisions\.md$/, /^artifacts\/clarifications\.md$/],
 	planner: [/^artifacts\/plan\.md$/, /^artifacts\/tasks\.md$/, /^artifacts\/clarifications\.md$/],
 	scout: [/^artifacts\/research\.md$/, /^artifacts\/clarifications\.md$/],
-	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/decisions\.md$/, /^artifacts\/clarifications\.md$/],
+	// (P1-6) decisions.md is the director's rulings log — both the director skill and the
+	// artifact-ownership table call it director-owned, but it was also in this allowlist,
+	// letting an architect overwrite director rulings. design-decisions.md is architect's own
+	// artifact for design rationale instead.
+	architect: [/^artifacts\/architecture\.md$/, /^artifacts\/design-decisions\.md$/, /^artifacts\/clarifications\.md$/],
 	engineer: [/^artifacts\/clarifications\.md$/], // + source (default allow below)
 	reviewer: [/^artifacts\/review\.md$/, /^artifacts\/clarifications\.md$/],
 	qa: [/^artifacts\/test-report\.md$/, /^artifacts\/clarifications\.md$/, /(^|\/)tests?\//, /\.test\./, /\.spec\./],
@@ -65,6 +69,7 @@ export const ARTIFACT_MDS = new Set([
 	"research.md",
 	"architecture.md",
 	"decisions.md",
+	"design-decisions.md",
 	"clarifications.md",
 	"review.md",
 	"test-report.md",

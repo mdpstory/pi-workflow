@@ -8,7 +8,7 @@ import { currentGitSha, isArchitectureFresh, stampArchitecture } from "../lib/ar
 import { resetToolCalls, TOOL_CAP } from "../lib/ceiling.ts";
 import { requireApprovalSet, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
 import { ARTIFACT_FOR_STAGE, nextStage, ROLE_FOR_STAGE, STAGES, stageIndex, type Stage } from "../lib/constants.ts";
-import { requireDirector, requireHumanGate, workflowId } from "../lib/identity.ts";
+import { requireDirector, requireHumanGate, role } from "../lib/identity.ts";
 import { acquireOrCheckLock } from "../lib/lock.ts";
 import { artifactPath, artifactsDir } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
@@ -26,6 +26,36 @@ function nextGateStage(state: ReturnType<typeof loadState>, from: Stage): Stage 
 	let n = nextStage(from);
 	while (n && (skip.has(n) || state.stages[n]?.status === "done")) n = nextStage(n);
 	return n;
+}
+
+// (P0-3) Human gate is code-enforced, not convention-only. requireHumanGate lets both
+// "unassigned" (the human, directly) and "director" (relaying a human verdict) call
+// wf_approve/wf_continue — but nothing used to distinguish relaying from inventing. When
+// the caller is director AND a UI is available, force an explicit confirm() showing the
+// exact verdict being relayed. When no UI is available, preserve today's behaviour (director
+// can still relay) but stamp `relayed-by-director` into decisions.md so the audit trail
+// records that no human keystroke was actually captured.
+async function confirmHumanVerdict(
+	ctx: unknown,
+	tool: string,
+	stage: string,
+	sha: string | undefined,
+	verdict: string,
+): Promise<boolean> {
+	if (role() !== "director") return true; // unassigned session IS the human — nothing to relay
+	const anyCtx = ctx as { hasUI?: boolean; ui?: { confirm: (t: string, m: string) => Promise<boolean> } };
+	const shaPart = sha ? ` @ ${sha.slice(0, 7)}` : "";
+	if (anyCtx?.hasUI && anyCtx.ui?.confirm) {
+		return anyCtx.ui.confirm(
+			"pi-workflow",
+			`Director is relaying human verdict "${verdict}" for ${tool}(stage="${stage}"${shaPart}). Confirm this is what the human actually decided.`,
+		);
+	}
+	fs.appendFileSync(
+		path.join(artifactsDir(), "decisions.md"),
+		`\n## relayed-by-director: ${tool} verdict=${verdict} stage=${stage}${shaPart} (no UI available to capture human confirmation)\n`,
+	);
+	return true;
 }
 
 export function registerStageTools(pi: ExtensionAPI) {
@@ -159,7 +189,7 @@ export function registerStageTools(pi: ExtensionAPI) {
 				? ` (auto-skipped: ${allSkipped.join(", ")} — do NOT call wf_stage_complete for those, they are already "done")`
 				: "";
 			const hint = [
-				`\n\nDELEGATE: subagent({ agent: "${delegateRole}", env: { PI_WORKFLOW_ROLE: "${delegateRole}", PI_WORKFLOW_ID: "${workflowId()}" }, task: "Load skill wf-${delegateRole}. ..." })`,
+				`\n\nDELEGATE: subagent({ agent: "${delegateRole}", task: "Load skill wf-${delegateRole}. ..." }) — do NOT pass env: role/id come from the dispatched agent's workflowRole frontmatter, not caller-supplied env.`,
 				`Each subagent gets a fresh context window and ${TOOL_CAP}-tool budget.`,
 				`Expected artifacts: ${artifactList}`,
 				`When finished, call wf_stage_complete("${cur}", sha).`,
@@ -324,9 +354,11 @@ export function registerStageTools(pi: ExtensionAPI) {
 			verdict: StringEnum(["approve", "reject"]),
 			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
 		}),
-		async execute(_id, params) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_approve");
 			if (blocked) return deny(blocked.msg);
+			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict);
+			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			const state = loadState();
 			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
 				return deny(`no matching pending approval for stage=${params.stage} sha=${params.sha}`);
@@ -388,9 +420,11 @@ export function registerStageTools(pi: ExtensionAPI) {
 			verdict: StringEnum(["approve", "reject"]),
 			note: Type.Optional(Type.String({ description: "required context for reject — becomes the correction brief" })),
 		}),
-		async execute(_id, params) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_continue");
 			if (blocked) return deny(blocked.msg);
+			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict);
+			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
 			const state = loadState();
 			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {
 				return deny(`no matching pre-approval for nextStage=${params.stage}`);

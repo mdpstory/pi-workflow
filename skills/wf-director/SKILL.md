@@ -36,14 +36,13 @@ You route only. The extension will physically block you from writing plan/resear
 
 Dispatch each stage to its dedicated registered subagent (`agent: "planner"`, `agent: "scout"`, `agent: "architect"`, `agent: "engineer"`, `agent: "reviewer"`, `agent: "qa"`, `agent: "documenter"`).
 
-### Identity via env, not task-text convention
+### Identity comes from the dispatched agent, never from env
 
-Pass role and workflow id through the subagent's `env`, not by prefixing the task string with `PI_WORKFLOW_ROLE=<role>` — that text convention is not enforced by anything and is easy to typo or drop. Every dispatch MUST include:
+Do not pass `env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID }` at all — the extension strips those keys from caller-supplied env and ignores them (they're reserved; see `RESERVED_ENV_KEYS`/`buildChildEnv` in `subagent/run.ts`). Role is derived solely from the dispatched agent's own `workflowRole` frontmatter (`agent: "architect"` → architect, automatically); workflow id is inherited from the process env or the `.workflow/.active-id` marker automatically. Passing these keys has no effect other than triggering a dropped-key warning in the subagent result. Just dispatch:
 
 ```ts
 subagent({
   agent: "architect",
-  env: { PI_WORKFLOW_ROLE: "architect", PI_WORKFLOW_ID: "<workflow id from wf_status>" },
   task: "Load skill wf-architect. Request: <the user's request/context>. "
       + "Write .workflow/shared/artifacts/architecture.md, run git rev-parse HEAD (do not commit), then report back stage/artifacts/sha."
 })
@@ -57,7 +56,6 @@ Before spawning any agent after Scout completes, call `wf_knowledge_get` for the
 const notes = await callTool("wf_knowledge_get", { file: "src/app.ts" });
 subagent({
   agent: "architect",
-  env: { PI_WORKFLOW_ROLE: "architect", PI_WORKFLOW_ID: id },
   task: "Load skill wf-architect. Request: <request>.\n\n## Prior notes on src/app.ts\n" + notes
       + "\n\nCall wf_knowledge_get yourself for any other file before reading it in full."
 })
@@ -80,7 +78,7 @@ When an artifact must be written or revised, dispatch the role that OWNS it. Nev
 | plan.md | planner |
 | tasks.md | planner |
 | research.md | scout |
-| architecture.md | architect |
+| architecture.md, design-decisions.md | architect |
 | review.md | reviewer |
 | test-report.md | qa |
 | changelog.md, docs/, README.md | documenter |
@@ -98,9 +96,9 @@ wf_stage_start <stage>
       • response contains "PRE_APPROVAL_REQUIRED" → STOP. Do not spawn subagent. Present
         the summary to the user verbatim, wait for the user's verdict in chat, then relay
         it via wf_continue(stage, verdict).
-      • response contains "stage started" → spawn a NEW subagent (agent: <role>,
-        env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID } — do NOT recruit existing generic/idle
-        sessions via intercom for role work)
+      • response contains "stage started" → spawn a NEW subagent (agent: <role>; do NOT
+        pass env — identity comes from the agent's workflowRole frontmatter; do NOT
+        recruit existing generic/idle sessions via intercom for role work)
           → wait for role's report with SHA
           → wf_artifact_summary <artifact> to sanity-check headings/verdict; read in full
             only if summary looks wrong or you're about to call wf_stage_complete
@@ -122,15 +120,15 @@ wf_stage_start <stage>
 
 Planning and Research run sequentially in order (`planning` then `research`).
 
-1. `wf_stage_start planning` → spawn Planner subagent (`env: { PI_WORKFLOW_ROLE: "planner", PI_WORKFLOW_ID }`).
+1. `wf_stage_start planning` → spawn Planner subagent (`agent: "planner"`, no env).
 2. Wait for Planner to report back with SHA → `wf_stage_complete planning <sha>`.
-3. `wf_stage_start research` → spawn Scout subagent (`env: { PI_WORKFLOW_ROLE: "scout", PI_WORKFLOW_ID }`).
+3. `wf_stage_start research` → spawn Scout subagent (`agent: "scout"`, no env).
 4. Wait for Scout to report back with SHA → `wf_stage_complete research <sha>`.
 5. Proceed to `wf_stage_start task-breakdown`.
 
 ## Task Breakdown
 
-Dispatch a Planner subagent (`env: { PI_WORKFLOW_ROLE: "planner", PI_WORKFLOW_ID }`) to reconcile `plan.md` + `research.md` into `tasks.md`. Director does NOT write tasks.md — the extension blocks it. Log routing decisions in `decisions.md`. On Planner's report → `wf_stage_complete task-breakdown <sha>`.
+Dispatch a Planner subagent (`agent: "planner"`, no env) to reconcile `plan.md` + `research.md` into `tasks.md`. Director does NOT write tasks.md — the extension blocks it. Log routing decisions in `decisions.md`. On Planner's report → `wf_stage_complete task-breakdown <sha>`.
 
 ## Implementation (Parallel Engineers)
 
@@ -142,7 +140,6 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
    ```ts
    subagent({
      agent: "engineer",
-     env: { PI_WORKFLOW_ROLE: "engineer", PI_WORKFLOW_ID: id },
      task: "Implement task T1 per tasks.md & architecture.md.\n"
          + "Call wf_knowledge_get for files you touch before reading them in full.\n"
          + "Peer engineer is working on T2 in parallel — use wf_msg_post/wf_msg_poll to "

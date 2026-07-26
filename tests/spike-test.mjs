@@ -11,6 +11,7 @@ import * as os from "node:os";
 process.env.PI_WORKFLOW_ID = "default";
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-spike-"));
+process.env.HOME = sandbox; // isolate from real ~/.pi/agent/pi-workflow.json (config leaks via os.homedir())
 process.chdir(sandbox);
 fs.mkdirSync(".pi", { recursive: true });
 fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ skipStages: [] }));
@@ -55,6 +56,7 @@ export const Type = {
   Object: (s) => ({ type: "object", properties: s }),
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
+  Boolean: (o) => ({ type: "boolean", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");

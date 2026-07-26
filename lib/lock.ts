@@ -26,6 +26,19 @@ export function isPidAlive(pid: number): boolean {
 	}
 }
 
+// (P1-7) `process.kill(pid, 0)` only means anything against a PID on THIS host. A lock
+// written on another machine (shared checkout / NFS mount) has a `pid` that is just a
+// number here — an unrelated local process happening to reuse that PID reads back as
+// "ALIVE" even though the real lock holder is on a different machine entirely, and the
+// same false positive happens from PID reuse on one host after a long-dead process. Gate
+// the local PID check behind a hostname match; a foreign host reports UNKNOWN instead of
+// silently resolving either way.
+export type LockLiveness = "alive" | "stale" | "unknown-foreign-host";
+export function lockLiveness(lock: LockInfo): LockLiveness {
+	if (lock.host !== os.hostname()) return "unknown-foreign-host";
+	return isPidAlive(lock.pid) ? "alive" : "stale";
+}
+
 export function readLock(): LockInfo | null {
 	return readJson<LockInfo | null>(lockPath(), null);
 }
@@ -37,10 +50,17 @@ export function readLock(): LockInfo | null {
  *  instant — only one process's exclusive create can win; the loser falls back to
  *  reading what the winner wrote and reports it as foreign. Refreshing our own
  *  existing lock still uses a plain write since we already own it. */
-export function acquireOrCheckLock(): LockInfo | null {
+/** `force`: explicit override to reclaim a lock reported UNKNOWN (foreign host) —
+ *  never applied automatically. Without it, a foreign-host lock blocks exactly like a
+ *  live one; it just gets a distinguishable reason so the caller doesn't tell the
+ *  operator "another director is running" when it might just be a stale lock from a
+ *  machine that isn't this one. */
+export function acquireOrCheckLock(force = false): LockInfo | null {
 	const existing = readLock();
-	if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) {
-		return existing; // foreign + alive → caller must not proceed
+	if (existing && existing.pid !== process.pid) {
+		const liveness = lockLiveness(existing);
+		if (liveness === "alive") return existing; // foreign + alive → caller must not proceed
+		if (liveness === "unknown-foreign-host" && !force) return existing; // ambiguous → block until explicit override
 	}
 	const info: LockInfo = {
 		pid: process.pid,

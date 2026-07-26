@@ -11,6 +11,7 @@ import * as path from "node:path";
 
 process.env.PI_WORKFLOW_ID = "default";
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "wf-gate-"));
+process.env.HOME = sandbox; // isolate from real ~/.pi/agent/pi-workflow.json (config leaks via os.homedir())
 process.chdir(sandbox);
 fs.mkdirSync(".pi", { recursive: true });
 // research skipped by config; implementation gated. architecture stays runnable.
@@ -26,6 +27,7 @@ export const Type = {
   Object: (s) => ({ type: "object", properties: s }),
   String: (o) => ({ type: "string", ...o }),
   Optional: (t) => ({ ...t, optional: true }),
+  Boolean: (o) => ({ type: "boolean", ...o }),
 };`,
 );
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
@@ -39,7 +41,7 @@ const jiti = createJiti(import.meta.url, {
 		"@earendil-works/pi-coding-agent": path.join(sandbox, "__stub_pi_agent.mjs"),
 	},
 });
-const extModule = await jiti.import(new URL("./index.ts", import.meta.url).pathname);
+const extModule = await jiti.import(new URL("../index.ts", import.meta.url).pathname);
 (extModule.default || extModule)(api);
 
 const call = async (name, params = {}) => {

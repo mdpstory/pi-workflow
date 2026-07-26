@@ -52,8 +52,13 @@ Three states, resolved fresh on every call:
   inherited by anything the director spawns). Loading the `wf-director` skill by
   itself does NOT make a session the director — the skill's first step is
   `wf_claim`.
-- **`<role>`** — `PI_WORKFLOW_ROLE=<role>` in env; how a dispatched subagent gets
-  its identity: `subagent({ agent, env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID }, task })`.
+- **`<role>`** — `PI_WORKFLOW_ROLE=<role>` in env; set automatically for a dispatched
+  subagent from the agent's own `workflowRole` frontmatter (`agent: "engineer"` →
+  engineer). Callers do not pass role/id via `env` at all — `PI_WORKFLOW_ROLE` and
+  `PI_WORKFLOW_ID` are reserved keys, silently stripped from caller-supplied `env`
+  (with a warning surfaced in the subagent result) to stop a caller from handing a
+  child director permissions or resetting the recursion depth. Just
+  `subagent({ agent, task })`.
 
 Once any role exists (director included), the write/edit hook and the 50-call
 ceiling activate uniformly. Director's own allowlist
@@ -94,7 +99,8 @@ relay the pre-approval gate deadlocks. Skill rule: no user message, no call.
 
 (`PI_WORKFLOW_ROLE`/`PI_WORKFLOW_ID` stay env vars, not config — they're
 per-process identity: multiple roles run concurrently as separate subagent
-processes and can't share one config value.)
+processes and can't share one config value. They are set by the extension
+itself when spawning a subagent, never by the caller — see "Role model" above.)
 
 ## Running multiple workflows in the same repo
 
@@ -153,9 +159,11 @@ analyzing the same file don't multiply retrieval tokens by N forever.
 repo-wide, survives across workflow ids); `scope: "task"` fragments live under
 `.workflow/<id>/knowledge/` and **disappear when the workflow id does** — a new
 workflow id starts cold on task notes; promote durable facts to `general`
-instead. `wf_knowledge_get` filters to fragments whose recorded `mtime`/`size`
-still match the file on disk — stale fragments are excluded and counted, never
-silently served as current.
+instead. `wf_knowledge_get` filters to fragments whose recorded `mtime`/`size`/
+`hash` still match the file on disk (mtime+size are a cheap pre-filter, the sha1
+content hash is the actual verdict — a same-size edit or a git checkout that
+preserves mtime cannot be served as fresh) — stale fragments are excluded and
+counted, never silently served as current.
 
 **Read interception (`interceptReads`, default `true`):** a full-file `read` of
 a source that has fresh fragments transparently returns the fragment(s) instead
@@ -234,11 +242,14 @@ subagent/
 **Modes** — `{ agent, task }` (single), `{ tasks: [...] }` (parallel, max 8, 4
 concurrent), `{ chain: [...] }` (sequential, `{previous}` placeholder).
 
-**Env passthrough**: `subagent({ agent, env: { PI_WORKFLOW_ROLE, PI_WORKFLOW_ID }, task })`
-is how a director gives a dispatched subagent its workflow identity — see
-"Role model" above. `RESERVED_ENV_KEYS` in `run.ts` strips any caller-supplied
-attempt to set these directly; only the tool's own `env` param can set them,
-and a depth ceiling prevents runaway recursive dispatch.
+**Identity, not env passthrough**: `subagent({ agent, task })` — the child's workflow
+identity is derived internally (`buildChildEnv`) from the dispatched agent's own
+`workflowRole` frontmatter and the inherited/marker-resolved workflow id, never from a
+caller-supplied `env`. `RESERVED_ENV_KEYS` in `run.ts` strips `PI_WORKFLOW_ROLE`,
+`PI_WORKFLOW_ID`, and the recursion-depth keys out of any caller-supplied `env` before
+merging it, and `buildChildEnv` reports which keys were dropped so the subagent result
+surfaces a visible warning instead of silently doing nothing. A depth ceiling separately
+prevents runaway recursive dispatch.
 
 **Agent personas**: `agents/*.md` (architect, documenter, engineer, planner, qa,
 reviewer, scout, worker — director intentionally excluded, see the comment in
