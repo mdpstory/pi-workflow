@@ -5,10 +5,10 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentGitSha, stampArchitecture } from "../lib/architecture.ts";
 import { ARTIFACT_MDS, SHARED_ARTIFACTS } from "../lib/constants.ts";
-import { role, workflowId } from "../lib/identity.ts";
+import { requireDirector, role, workflowId } from "../lib/identity.ts";
 import { isPathAllowedForRole } from "../lib/access.ts";
 import { lockLiveness, readLock } from "../lib/lock.ts";
-import { artifactPath } from "../lib/paths.ts";
+import { artifactPath, intentPath } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
 import { clrBlocksStage, loadClr, loadState } from "../lib/state.ts";
 
@@ -22,6 +22,13 @@ export function registerStatusTools(pi: ExtensionAPI) {
 			const state = loadState();
 			const clr = loadClr();
 			const lock = readLock();
+			let intent: string | null = null;
+			try {
+				const t = fs.readFileSync(intentPath(), "utf8").trim();
+				if (t) intent = t;
+			} catch {
+				// no intent recorded yet
+			}
 			const lockLine = lock
 				? `lock: pid ${lock.pid} on ${lock.host} (${
 						lockLiveness(lock) === "alive"
@@ -40,8 +47,47 @@ export function registerStatusTools(pi: ExtensionAPI) {
 				`pending pre-approval: ${state.pendingPreApproval ? `${state.pendingPreApproval.nextStage} (after ${state.pendingPreApproval.completedStage} @ ${state.pendingPreApproval.sha})` : "none"}`,
 				lockLine,
 				"",
+				"--- director memory (first-person log — your POV + where you left off) ---",
+				intent ?? "(none recorded — call wf_intent to log the user's request + your routing decisions so they survive an abort)",
 			];
-			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock } };
+			return { content: [{ type: "text", text: lines.join("\n") }], details: { state, clr, lock, intent } };
+		},
+	});
+
+	// Director's durable first-person memory/log. Persisted to .workflow/<id>/intent.md so a
+	// NEW director session that resumes a workflow (via the .active-id marker) recovers both the
+	// original request AND the prior director's routing POV / where it left off — even if aborted
+	// before any stage artifact (plan.md) was written. Append-by-default; each entry auto-stamped.
+	pi.registerTool({
+		name: "wf_intent",
+		label: "wf_intent",
+		description:
+			"Director's persistent first-person memory/log. Append a POV entry after every decision so a resumed session knows where it stood and what it intended next — e.g. \"user want /health api\", \"scout ran, spawning planner with scout's knowledge\", \"tasks read, dispatching 3 parallel engineers on T1/T2/T3\". Call with {brief} (append is the default) to log an entry; {brief, replace:true} to reset the whole log; no args to read it back. Survives session kill / early abort. Director only.",
+		parameters: Type.Object({
+			brief: Type.Optional(Type.String({ description: "a first-person POV entry: what you just learned/decided and what you intend to do next; omit to just read current memory" })),
+			replace: Type.Optional(Type.Boolean({ description: "reset the entire log instead of appending (rarely needed)" })),
+		}),
+		async execute(_id, params) {
+			const abs = intentPath();
+			if (params.brief === undefined) {
+				try {
+					const t = fs.readFileSync(abs, "utf8");
+					return { content: [{ type: "text", text: t || "(intent memory empty)" }], details: { ok: true, intent: t } };
+				} catch {
+					return { content: [{ type: "text", text: "(no intent memory recorded yet)" }], details: { ok: true, intent: null } };
+				}
+			}
+			const denied = requireDirector();
+			if (denied) return deny(denied.msg);
+			fs.mkdirSync(path.dirname(abs), { recursive: true });
+			const stamp = new Date().toISOString();
+			if (params.replace) {
+				fs.writeFileSync(abs, `# director memory (first-person log)\n\n- [${stamp}] ${params.brief}\n`);
+				return ok(`reset director memory (${params.brief.length} chars) — survives session kill`);
+			}
+			if (!fs.existsSync(abs)) fs.writeFileSync(abs, "# director memory (first-person log)\n\n");
+			fs.appendFileSync(abs, `- [${stamp}] ${params.brief}\n`);
+			return ok(`logged director memory entry (${params.brief.length} chars) — survives session kill`);
 		},
 	});
 

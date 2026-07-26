@@ -35,6 +35,11 @@ export function artifactPath(filename: string): string {
 export function statePath(): string {
 	return path.join(wfDir(), "state.json");
 }
+/** Director's own durable memory of the original user request/brief — survives session kill,
+ * persisted even before any stage artifact exists (early-abort context recovery). */
+export function intentPath(): string {
+	return path.join(wfDir(), "intent.md");
+}
 export function clrIndexPath(): string {
 	return path.join(wfDir(), "clr-index.json");
 }

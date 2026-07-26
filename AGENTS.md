@@ -98,6 +98,7 @@ planning → research → task-breakdown → architecture → implementation →
 | `wf_approve` | Human approval gate |
 | `wf_continue` | Approve/reject stage after pre-approval gate |
 | `wf_artifact_summary` | Token-economic polling |
+| `wf_intent` | Director's persistent first-person memory/log (survives session kill) |
 
 ## Prompts
 
