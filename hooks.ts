@@ -70,28 +70,41 @@ export function registerHooks(pi: ExtensionAPI) {
 			const m = /^\s*(?:cat|head|tail|sed\s+-n)\b[^|&;]*?([^\s|&;]+)\s*$/.exec(cmd);
 			if (m) {
 				const rel = relFromRepo(m[1]);
-				if (!rel.startsWith("..") && !rel.startsWith(".workflow/")) {
-					if (loadConfig().interceptReads) {
-						const { sections } = freshFragments(rel);
-						if (sections.length) {
-							return { block: true, reason: `pi-workflow: use read/wf_knowledge_get — cached analysis exists for ${rel}` };
-						}
-					}
-				} else if (rel.startsWith(".workflow/")) {
+				if (rel.startsWith(".workflow/")) {
 					// Read isolation: block bash reads of foreign workflow namespaces
 					const readCheck = isPathReadableByRole(role(), rel);
 					if (!readCheck.ok) {
 						return { block: true, reason: `pi-workflow: ${readCheck.reason}` };
 					}
+				} else if (!rel.startsWith("..") && loadConfig().interceptReads) {
+					const { sections } = freshFragments(rel);
+					if (sections.length) {
+						return { block: true, reason: `pi-workflow: use read/wf_knowledge_get — cached analysis exists for ${rel}` };
+					}
+				}
+			}
+			// Broader net: any bash command that mentions a foreign workflow namespace
+			// (grep/ls/awk/python/etc. bypass the cat|head|tail|sed regex above). Not a
+			// full parser — scans literal ".workflow/<id>" tokens in the command string.
+			for (const idMatch of cmd.matchAll(/\.workflow\/([A-Za-z0-9_-]+)/g)) {
+				const rel = `.workflow/${idMatch[1]}`;
+				const readCheck = isPathReadableByRole(role(), rel);
+				if (!readCheck.ok) {
+					return { block: true, reason: `pi-workflow: ${readCheck.reason}` };
 				}
 			}
 		}
 
 		// Read isolation: subagents (non-director roles) cannot read other workflow
 		// namespaces. Each workflow can only see its own artifacts and .workflow/shared/.
-		if (event.toolName === "read" && workflowActive()) {
-			const p = (event.input as { path?: string }).path;
-			if (p) {
+		// Covers both `read` and `fetch_content` (local-file / file:// fetches) since both
+		// return raw file content to the model.
+		if ((event.toolName === "read" || event.toolName === "fetch_content") && workflowActive()) {
+			const input = event.input as { path?: string; url?: string; urls?: string[] };
+			const candidates = [input.path, input.url, ...(input.urls ?? [])]
+				.filter((v): v is string => !!v)
+				.map((v) => v.replace(/^file:\/\//, ""));
+			for (const p of candidates) {
 				const rel = relFromRepo(p);
 				if (!rel.startsWith("..")) {
 					const readCheck = isPathReadableByRole(role(), rel);
