@@ -5,11 +5,11 @@
 // per-role JSONL under .workflow/<id>/bus/, appended via a single appendFileSync call
 // (same atomicity argument as wf_context_append had) — survives process death, fully
 // auditable after the run.
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { postMessage } from "../lib/bus.ts";
 import { requireDirector, role, workflowActive } from "../lib/identity.ts";
 import { readJsonl } from "../lib/io.ts";
 import { busDir, busFile } from "../lib/paths.ts";
@@ -27,18 +27,8 @@ export function registerBusTools(pi: ExtensionAPI) {
 		}),
 		async execute(_id, params) {
 			if (!workflowActive()) return deny("no role claimed — load a role skill or set PI_WORKFLOW_ROLE");
-			fs.mkdirSync(busDir(), { recursive: true });
-			const target = params.to.toLowerCase() === "all" ? "all" : params.to.toLowerCase();
-			const msg = {
-				id: crypto.randomBytes(4).toString("hex"),
-				from: role(),
-				to: target,
-				body: params.body,
-				threadId: params.threadId ?? "",
-				ts: new Date().toISOString(),
-			};
-			fs.appendFileSync(busFile(target), `${JSON.stringify(msg)}\n`); // single write() syscall — atomic under concurrent writers
-			return ok(`posted to ${target}: ${msg.id}`);
+			const msg = postMessage(role(), params.to, params.body, params.threadId ?? "");
+			return ok(`posted to ${msg.to}: ${msg.id}`);
 		},
 	});
 

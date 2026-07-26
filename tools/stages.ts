@@ -8,6 +8,7 @@ import { currentGitSha, isArchitectureFresh, stampArchitecture } from "../lib/ar
 import { resetToolCalls, TOOL_CAP } from "../lib/ceiling.ts";
 import { requireApprovalSet, requirePreApprovalSet, skipStagesSet } from "../lib/config.ts";
 import { ARTIFACT_FOR_STAGE, nextStage, ROLE_FOR_STAGE, STAGES, stageIndex, type Stage } from "../lib/constants.ts";
+import { nextGateStage, resolveApproval, resolvePreApproval } from "../lib/gates.ts";
 import { requireDirector, requireHumanGate, role } from "../lib/identity.ts";
 import { acquireOrCheckLock } from "../lib/lock.ts";
 import { artifactPath, artifactsDir } from "../lib/paths.ts";
@@ -19,13 +20,6 @@ import { clrBlocksStage, isStubContent, loadClr, loadState, saveState } from "..
 // wf_stage_start auto-skips them and the pending gate is left pointing at a dead stage.
 function allSkippedSoFar(a: Stage[], b: Stage[]): string {
 	return [...a, ...b].join(", ") || "(none)";
-}
-
-function nextGateStage(state: ReturnType<typeof loadState>, from: Stage): Stage | null {
-	const skip = skipStagesSet();
-	let n = nextStage(from);
-	while (n && (skip.has(n) || state.stages[n]?.status === "done")) n = nextStage(n);
-	return n;
 }
 
 // (P0-3) Human gate is code-enforced, not convention-only. requireHumanGate lets both
@@ -85,7 +79,14 @@ export function registerStageTools(pi: ExtensionAPI) {
 					saveState(state);
 				} else {
 					// Quote the GATED stage, not the requested one — wf_continue matches on nextStage.
-					return deny(`PRE_APPROVAL_REQUIRED: stage "${state.pendingPreApproval.completedStage}" done — user must approve before starting "${gated}". User: call wf_continue(stage="${gated}", verdict="approve"|"reject", note?)`);
+					// Carry decision/nextStage/stage/sha in details so the tool_result hook (hooks.ts)
+					// can also intercept this and pop the confirm dialog immediately, same as the
+					// gateOnLanding path further down — otherwise a UI session would have to wait for
+					// the LLM to relay this as text and call wf_continue itself.
+					return {
+						content: [{ type: "text", text: `PRE_APPROVAL_REQUIRED: stage "${state.pendingPreApproval.completedStage}" done — user must approve before starting "${gated}". User: call wf_continue(stage="${gated}", verdict="approve"|"reject", note?)` }],
+						details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage: state.pendingPreApproval.completedStage, nextStage: gated, sha: state.pendingPreApproval.sha },
+					};
 				}
 			}
 			if (idx > 0) {
@@ -362,57 +363,25 @@ export function registerStageTools(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_approve");
 			if (blocked) return deny(blocked.msg);
-			const state = loadState();
-			const summary = state.pendingApproval?.summary;
+			const preState = loadState();
+			const summary = preState.pendingApproval?.summary;
 			const confirmed = await confirmHumanVerdict(ctx, "wf_approve", params.stage, params.sha, params.verdict, summary);
 			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
+			// Re-load: confirm() was awaited, state may have moved under us.
+			const state = loadState();
 			if (!state.pendingApproval || state.pendingApproval.stage !== params.stage || state.pendingApproval.sha !== params.sha) {
 				return deny(`no matching pending approval for stage=${params.stage} sha=${params.sha}`);
 			}
-			if (params.verdict === "reject") {
-				state.pendingApproval = null;
-				state.stages[params.stage as Stage].status = "in-progress";
-				saveState(state);
-				fs.appendFileSync(
-					path.join(artifactsDir(), "decisions.md"),
-					`\n## human rejection: ${params.stage} @ ${params.sha.slice(0, 7)}\n${params.note ?? "(no note given)"}\n`,
-				);
-				return ok(`REJECTED ${params.stage} — reset to in-progress with correction note in decisions.md`);
-			}
-			if (params.stage === "architecture") {
-				const head = currentGitSha();
-				if (head) stampArchitecture(head);
-			}
-			state.stages[params.stage as Stage].status = "done";
-			state.stages[params.stage as Stage].sha = params.sha;
-
-			// Check pre-approval for next stage
-			const nxt = nextGateStage(state, params.stage as Stage);
-			if (nxt && requirePreApprovalSet().has(nxt)) {
-				const artifactList = ARTIFACT_FOR_STAGE[params.stage as Stage].join(", ") || "source code";
-				const summary = [
-					`## completed: ${params.stage}`,
-					`- artifact(s): ${artifactList}`,
-					`- sha: ${params.sha.slice(0, 7)}`,
-					`## next stage: ${nxt}`,
-					`- role: ${ROLE_FOR_STAGE[nxt]}`,
-					`- expected artifacts: ${ARTIFACT_FOR_STAGE[nxt].join(", ") || "source code"}`,
-					`## question`,
-					`- approve starting ${nxt}? call wf_continue(stage="${nxt}", verdict="approve"|"reject", note?)`,
-				].join("\n");
-				state.pendingPreApproval = { nextStage: nxt, completedStage: params.stage as Stage, sha: params.sha, summary };
-				state.current = null;
-				saveState(state);
+			// StringEnum widens to `string` at the type level; the schema constrains the runtime value.
+const result = resolveApproval(state, params.stage as Stage, params.sha, params.verdict as "approve" | "reject", params.note, "tool");
+			saveState(state);
+			if (result.kind === "pre-approval-required") {
 				return {
-					content: [{ type: "text", text: `PRE_APPROVAL_REQUIRED\n${summary}` }],
-					details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage: params.stage, nextStage: nxt, sha: params.sha },
+					content: [{ type: "text", text: result.text }],
+					details: { ok: false, decision: "PRE_APPROVAL_REQUIRED", stage: params.stage, nextStage: result.nextStage, sha: params.sha },
 				};
 			}
-
-			state.current = nxt;
-			state.pendingApproval = null;
-			saveState(state);
-			return ok(`APPROVED (human) ${params.stage} @ ${params.sha.slice(0, 7)}`);
+			return ok(result.text);
 		},
 	});
 
@@ -429,31 +398,20 @@ export function registerStageTools(pi: ExtensionAPI) {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const blocked = requireHumanGate("wf_continue");
 			if (blocked) return deny(blocked.msg);
-			const state = loadState();
-			const summary = state.pendingPreApproval?.summary;
+			const preState = loadState();
+			const summary = preState.pendingPreApproval?.summary;
 			const confirmed = await confirmHumanVerdict(ctx, "wf_continue", params.stage, undefined, params.verdict, summary);
 			if (!confirmed) return deny("human declined to confirm this verdict via the UI prompt");
+			// Re-load: confirm() was awaited, state may have moved under us.
+			const state = loadState();
 			if (!state.pendingPreApproval || state.pendingPreApproval.nextStage !== params.stage) {
 				return deny(`no matching pre-approval for nextStage=${params.stage}`);
 			}
-			if (params.verdict === "reject") {
-				// Reset completed stage back to in-progress so director can re-run with corrections
-				const completedStage = state.pendingPreApproval.completedStage;
-				const completedSha = state.pendingPreApproval.sha;
-				state.stages[completedStage as Stage].status = "in-progress";
-				state.current = completedStage;
-				state.pendingPreApproval = null;
-				saveState(state);
-				fs.appendFileSync(
-					path.join(artifactsDir(), "decisions.md"),
-					`\n## pre-approval rejection: ${params.stage} @ ${completedSha?.slice(0, 7) ?? "?"}\n${params.note ?? "(no note given)"}\n`,
-				);
-				return ok(`REJECTED ${params.stage} — reset ${completedStage} to in-progress with correction note in decisions.md`);
-			}
-			// Approve: clear pre-approval, allow director to proceed
-			state.pendingPreApproval = null;
+			const completedStage = state.pendingPreApproval.completedStage;
+			const completedSha = state.pendingPreApproval.sha;
+			const result = resolvePreApproval(state, params.stage as Stage, completedStage as Stage, completedSha, params.verdict as "approve" | "reject", params.note, "tool");
 			saveState(state);
-			return ok(`PRE-APPROVED ${params.stage} — director may now call wf_stage_start("${params.stage}")`);
+			return ok(result.text);
 		},
 	});
 }
