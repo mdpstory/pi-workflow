@@ -75,7 +75,7 @@ relay the pre-approval gate deadlocks. Skill rule: no user message, no call.
 {
   "skipStages": ["review", "testing"],
   "requireApproval": ["architecture"],
-  "interceptReads": false
+  "interceptReads": true
 }
 ```
 
@@ -88,9 +88,9 @@ relay the pre-approval gate deadlocks. Skill rule: no user message, no call.
   `decisions.md`).
 - **`requireApproval`** — stages that need a human `wf_approve` call before they
   can be marked done. See "Human-in-the-loop approval gate" below.
-- **`interceptReads`** (default `false`) — when true, a full-file `read` of a
+- **`interceptReads`** (default `true`) — when true, a full-file `read` of a
   source with fresh knowledge fragments returns the fragments instead of the raw
-  body. See "Knowledge store" below.
+  body. See "Knowledge store" below. Set to `false` to restore old behavior.
 
 (`PI_WORKFLOW_ROLE`/`PI_WORKFLOW_ID` stay env vars, not config — they're
 per-process identity: multiple roles run concurrently as separate subagent
@@ -142,23 +142,31 @@ runs normally.
 Instead of one shared, append-only `context.md` every agent had to read/re-read
 in full, agents call `wf_knowledge_put({ file, note, scope })` per source file
 analyzed, and `wf_knowledge_get({ file })` before reading a file another agent
-may already have analyzed. Fragments are immutable and never collide (filename
+may already have analyzed. Omit `file` to get a coverage table (`path | scope |
+fragments | fresh?`) of every file already analyzed instead of guessing names
+one at a time. Fragments are immutable and never collide (filename
 includes pid + timestamp + role), so no locking is needed even under concurrent
-parallel Engineers. `scope: "general"` fragments live under
-`.workflow/shared/knowledge/` (durable, repo-wide, survives across workflow
-ids); `scope: "task"` fragments live under `.workflow/<id>/knowledge/`
-(disposable, this workflow only). `wf_knowledge_get` filters to fragments whose
-recorded `mtime`/`size` still match the file on disk — stale fragments are
-excluded and counted, never silently served as current.
+parallel Engineers. Retrieval keeps only the newest 3 fresh fragments per scope
+(older ones are noted as omitted, byte-identical dupes are dropped) so N agents
+analyzing the same file don't multiply retrieval tokens by N forever.
+`scope: "general"` fragments live under `.workflow/shared/knowledge/` (durable,
+repo-wide, survives across workflow ids); `scope: "task"` fragments live under
+`.workflow/<id>/knowledge/` and **disappear when the workflow id does** — a new
+workflow id starts cold on task notes; promote durable facts to `general`
+instead. `wf_knowledge_get` filters to fragments whose recorded `mtime`/`size`
+still match the file on disk — stale fragments are excluded and counted, never
+silently served as current.
 
-**Optional read interception (`interceptReads`):** with `"interceptReads": true`
-in config, a full-file `read` of a source that has fresh fragments transparently
-returns the fragment(s) instead of the raw body — the token win, enforced by the
-`tool_result` hook (which, unlike `tool_call`, can substitute a tool's result).
-It is **off by default** because it changes `read` semantics; passing an
-`offset` or `limit` to `read` is the escape hatch that always yields raw source.
-Even with the flag off, `wf_knowledge_get` is the explicit path agents call
-before reading; every role skill documents this.
+**Read interception (`interceptReads`, default `true`):** a full-file `read` of
+a source that has fresh fragments transparently returns the fragment(s) instead
+of the raw body — enforced by the `tool_result` hook (which, unlike
+`tool_call`, can substitute a tool's result). Passing an `offset` or `limit` to
+`read` is the escape hatch that always yields raw source (e.g. right before an
+edit). The `tool_call` hook also blocks the `bash` pager bypass (`cat`/`head`/
+`tail`/`sed -n` on a path with fresh fragments) with a hint to use `read` or
+`wf_knowledge_get` instead — `grep`/other bash reads are unaffected. Set
+`interceptReads: false` to disable both and fall back to skill-file discipline
+alone.
 
 ## Inter-agent message bus (replaces `intercom` for subagent coordination)
 

@@ -108,11 +108,11 @@ await call("wf_knowledge_put", { file: "src/hot.ts", note: "HOTNOTE: analyzed al
 const rawContent = [{ type: "text", text: "// hot file original\n" }];
 const mkEvent = (input) => ({ toolName: "read", isError: false, input, content: rawContent });
 
-// flag OFF (no config) → passthrough
+// P0-2: interceptReads now defaults to true (no config needed) → substituted
 let res = await onResult(mkEvent({ path: "src/hot.ts" }), {});
-assert(res === undefined, "interception OFF by default → read passes through untouched");
+assert(res && res.content[0].text.includes("HOTNOTE"), "interception ON by default (P0-2) → fresh fragment substituted");
 
-// flag ON
+// explicit flag ON still works too
 fs.mkdirSync(".pi", { recursive: true });
 fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ interceptReads: true }));
 res = await onResult(mkEvent({ path: "src/hot.ts" }), {});
@@ -133,5 +133,45 @@ delete process.env.PI_WORKFLOW_ROLE;
 fs.writeFileSync("src/hot.ts", "// hot file original\n"); // restore fresh, but no role
 res = await onResult(mkEvent({ path: "src/hot.ts" }), {});
 assert(res === undefined, "unassigned session → no interception");
+
+// explicit opt-out still respected
+fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ interceptReads: false }));
+process.env.PI_WORKFLOW_ROLE = "engineer";
+res = await onResult(mkEvent({ path: "src/hot.ts" }), {});
+assert(res === undefined, "interceptReads: false in config disables interception");
+fs.writeFileSync(".pi/pi-workflow.json", JSON.stringify({ interceptReads: true }));
+
+console.log("\n=== F: P1-1 coverage listing (wf_knowledge_get with no file) ===");
+const cov = await call("wf_knowledge_get", {});
+assert(cov.content[0].text.includes("src/file2.ts"), "coverage listing includes previously-analyzed file");
+assert(cov.content[0].text.includes("path | scope | fragments | fresh?"), "coverage listing has table header");
+assert(cov.content[0].text.includes("general") && cov.content[0].text.includes("task"), "coverage listing shows both scopes");
+
+console.log("\n=== G: P1-2 fragment cap — 6 puts on one file → 3 newest + omission note ===");
+fs.writeFileSync("src/capped.ts", "// capped file\n");
+for (let i = 0; i < 6; i++) {
+	await call("wf_knowledge_put", { file: "src/capped.ts", note: `note number ${i}`, scope: "task" });
+	await new Promise((r) => setTimeout(r, 2)); // ensure distinct `written` timestamps
+}
+const capped = await call("wf_knowledge_get", { file: "src/capped.ts" });
+const text = capped.content[0].text;
+assert(text.includes("note number 5") && text.includes("note number 3"), "newest 3 fragments present");
+assert(!text.includes("note number 0"), "oldest fragment dropped past cap");
+assert(/older fragment\(s\) omitted/.test(text), "omission note present");
+
+console.log("\n=== H: P1-3 bash pager bypass blocked when fresh fragment exists ===");
+const onCall = hooks.get("tool_call");
+assert(typeof onCall === "function", "tool_call hook is registered");
+fs.writeFileSync("src/bypass.ts", "// bypass file\n");
+await call("wf_knowledge_put", { file: "src/bypass.ts", note: "already analyzed", scope: "task" });
+let block = await onCall({ toolName: "bash", input: { command: "cat src/bypass.ts" } }, {});
+assert(block && block.block && /cached analysis exists/.test(block.reason), "bash cat on fresh-fragment file blocked");
+block = await onCall({ toolName: "bash", input: { command: "grep -n foo src/bypass.ts" } }, {});
+assert(!block, "bash grep still allowed");
+block = await onCall({ toolName: "bash", input: { command: "head -n5 src/bypass.ts" } }, {});
+assert(block && block.block, "bash head on fresh-fragment file blocked");
+fs.writeFileSync("src/bypass.ts", "// bypass file CHANGED\n");
+block = await onCall({ toolName: "bash", input: { command: "cat src/bypass.ts" } }, {});
+assert(!block, "bash cat allowed once fragment is stale");
 
 console.log(process.exitCode ? "\n✗ some assertions FAILED" : "\n✓ all wf_knowledge assertions passed");

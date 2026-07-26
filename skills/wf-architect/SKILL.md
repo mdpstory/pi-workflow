@@ -44,6 +44,7 @@ You write design docs only. Do NOT write or edit source code (not even a snippet
 - No pseudocode dumps of the whole system — that's Engineer's job.
 - **Use `wf_knowledge_get` results.** If Scout already documented a file's exports, types, and purpose — trust it. Do not re-read the source to double-check unless the fragment is stale/missing or you need exact line numbers for interface signatures.
 - architecture.md must be **general enough** that a future session building a different feature can understand the project from it.
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

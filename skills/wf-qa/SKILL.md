@@ -51,6 +51,7 @@ You write tests and `test-report.md` only. Do NOT edit production source, even t
 - Never edit production source. Extension blocks it.
 - Reuse Reviewer's defect-key when the same bug bounces — one retry counter, not two.
 - If a task requires perf/security tests, run them; else skip and say so.
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

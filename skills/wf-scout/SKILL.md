@@ -66,6 +66,7 @@ You write `research.md` only — findings, not fixes. Do NOT edit code, write pl
 - **Every file you read MUST appear in both `research.md` (file summaries) AND a `wf_knowledge_put` call.** This is the handoff mechanism — if you skip it, downstream agents will re-read everything from scratch.
 - Every symbol, risk, or reusable component you cite MUST include its `path:startLine-endLine` — never a bare filename, never a single line number alone.
 - Be thorough in file summaries. A good summary saves Architect 10+ tool calls per file.
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

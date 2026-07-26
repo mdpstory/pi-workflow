@@ -42,6 +42,7 @@ You write `review.md` only. Do NOT edit source code, even to "just fix" a trivia
 - Each finding must cite a task ID and a stable defect-key (Director uses it for retry counters).
 - Same defect across cycles = same key. Don't rename.
 - No stylistic bikeshed unless `tasks.md` requires a style.
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

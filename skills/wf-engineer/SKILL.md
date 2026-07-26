@@ -33,6 +33,7 @@ You write source code only, per `architecture.md` literally. Do NOT redesign, re
 - Follow `architecture.md` literally. Signatures, names, module layout.
 - No design changes. If architecture is wrong, file CLR — do not silently deviate.
 - Tests: leave to QA unless the task explicitly says "add unit test for X".
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`; only fall back to a raw read (with `offset`/`limit`) right before editing.
 
 ## On CLR
 

@@ -20,7 +20,14 @@ export function loadConfig(): WfConfig {
 	const projectPath = path.join(repoRoot(), ".pi", "pi-workflow.json");
 	const g = readJson<WfConfig>(globalPath, {});
 	const p = readJson<WfConfig>(projectPath, {});
-	return { skipStages: p.skipStages ?? g.skipStages, requireApproval: p.requireApproval ?? g.requireApproval, requirePreApproval: p.requirePreApproval ?? g.requirePreApproval, interceptReads: p.interceptReads ?? g.interceptReads };
+	return {
+		skipStages: p.skipStages ?? g.skipStages,
+		requireApproval: p.requireApproval ?? g.requireApproval,
+		requirePreApproval: p.requirePreApproval ?? g.requirePreApproval,
+		// P0-2: default true — dedup should not depend on agents remembering to opt in.
+		// Escape hatch: read with offset/limit always forces raw source; .workflow/ paths exempt.
+		interceptReads: p.interceptReads ?? g.interceptReads ?? true,
+	};
 }
 
 // Stages to auto-skip by default, via skipStages in .pi/pi-workflow.json (or

@@ -27,6 +27,7 @@ You write `plan.md`/`tasks.md` text only. You do NOT write, edit, or run source 
 - No restated context. Director already has it.
 - Every task must have testable acceptance criteria — QA reads these later.
 - Do not do Scout's job (risks, deps, reusables belong in `research.md`).
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

@@ -63,6 +63,13 @@ subagent({
 })
 ```
 
+**Director self-discipline (P2-2):** call `wf_knowledge_get({})` (no `file`) to get the full
+coverage table before building task prompts — it's the antidote to "director reads everything,
+pastes into each subagent prompt", which duplicates the token cost across every dispatch. Inject
+*fragments* into task prompts, never raw file bodies read in the Director session. If a needed
+file has no fragment yet, dispatch an agent to analyze it (Scout, or whichever role owns that
+kind of file) instead of reading it yourself first.
+
 ## Artifact ownership (who to dispatch for a fix)
 
 When an artifact must be written or revised, dispatch the role that OWNS it. Never dispatch

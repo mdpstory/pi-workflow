@@ -36,6 +36,7 @@ You write `changelog.md`, `README.md`, `docs/**` only. Do NOT edit source code o
 - User-facing only. Not internal design (that's `architecture.md`).
 - Do not restate `changelog.md` history — append.
 - If `test-report.md` verdict is FAIL, stop and notify Director instead of documenting.
+- Never `cat`/`sed`/`head`/`tail` a source file to read it — use `read` (interception applies) or `wf_knowledge_get`.
 
 ## On CLR
 

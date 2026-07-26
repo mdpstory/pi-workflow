@@ -45,6 +45,25 @@ export function registerHooks(pi: ExtensionAPI) {
 			}
 		}
 
+		// P1-3: close the bash pager bypass around read interception. A bare cat/head/tail/
+		// sed -n on a path with fresh knowledge fragments returns full source untouched by
+		// the tool_result hook (which only covers `read`) — nudge back to read/wf_knowledge_get.
+		// Regex-scoped and easy to bypass on purpose (e.g. `grep -A200`, piping through xargs);
+		// this targets the habitual case, not a security boundary.
+		if (event.toolName === "bash" && workflowActive() && loadConfig().interceptReads) {
+			const cmd = (event.input as { command?: string }).command ?? "";
+			const m = /^\s*(?:cat|head|tail|sed\s+-n)\b[^|&;]*?([^\s|&;]+)\s*$/.exec(cmd);
+			if (m) {
+				const rel = relFromRepo(m[1]);
+				if (!rel.startsWith("..") && !rel.startsWith(".workflow/")) {
+					const { sections } = freshFragments(rel);
+					if (sections.length) {
+						return { block: true, reason: `pi-workflow: use read/wf_knowledge_get — cached analysis exists for ${rel}` };
+					}
+				}
+			}
+		}
+
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
 
 		// No role active — untouched casual session. See workflowActive().
