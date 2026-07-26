@@ -3,11 +3,22 @@ import { isReadToolResult } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { wfNamespaceRel, isPathAllowedForRole } from "./lib/access.ts";
 import { bumpToolCalls, currentToolCalls, resetToolCalls, TOOL_CAP } from "./lib/ceiling.ts";
-import { loadConfig } from "./lib/config.ts";
-import { relFromRepo } from "./lib/paths.ts";
+import { loadConfig, requirePreApprovalSet, skipStagesSet } from "./lib/config.ts";
+import { relFromRepo, artifactsDir } from "./lib/paths.ts";
 import { role, workflowActive } from "./lib/identity.ts";
 import { freshFragments } from "./lib/knowledge.ts";
-import { clrBlocksStage, loadClr, loadState } from "./lib/state.ts";
+import { clrBlocksStage, loadClr, loadState, saveState } from "./lib/state.ts";
+import { ARTIFACT_FOR_STAGE, nextStage as rawNextStage, ROLE_FOR_STAGE, type Stage } from "./lib/constants.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+// Replicate nextGateStage: find next stage skipping configured-skip and already-done stages
+function nextGateStage(state: ReturnType<typeof loadState>, from: Stage): Stage | null {
+	const skip = skipStagesSet();
+	let n = rawNextStage(from);
+	while (n && (skip.has(n) || state.stages[n]?.status === "done")) n = rawNextStage(n);
+	return n;
+}
 
 export function registerHooks(pi: ExtensionAPI) {
 	// Reset tool counter on session start / switch / reload
@@ -100,6 +111,136 @@ export function registerHooks(pi: ExtensionAPI) {
 				return {
 					block: true,
 					reason: `pi-workflow: OPEN CLR(s) block writes: ${gate.ids.join(", ")}. Resolve via wf_clr_resolve before editing.`,
+				};
+			}
+		}
+
+		return undefined;
+	});
+
+	// --- tool_result hook: approval gate interception + P1-2 read interception ---
+	// When wf_stage_complete or wf_stage_start returns PRE_APPROVAL_REQUIRED or
+	// AWAITING_HUMAN, intercept the tool result and show a native confirm dialog.
+	// If the human approves, resolve the gate inline so the agent sees the verdict
+	// without needing to call wf_continue/wf_approve manually.
+	pi.on("tool_result", async (event, ctx) => {
+		if (!workflowActive()) return undefined;
+		if (event.isError) return undefined;
+
+		// Check for approval-decision tool results
+		const details = (event as { details?: { decision?: string; stage?: string; nextStage?: string; sha?: string } }).details;
+		if (!details?.decision) return undefined;
+		if (details.decision !== "PRE_APPROVAL_REQUIRED" && details.decision !== "AWAITING_HUMAN") return undefined;
+
+		// Need UI to show confirm dialog
+		if (!ctx.hasUI || !ctx.ui?.confirm) return undefined;
+
+		const state = loadState();
+		const toolName = event.toolName;
+
+		if (details.decision === "PRE_APPROVAL_REQUIRED" && (toolName === "wf_stage_complete" || toolName === "wf_stage_start")) {
+			// P4 gate: next stage needs approval before starting
+			const nextStage = details.nextStage!;
+			const completedStage = details.stage!;
+			const summary = state.pendingPreApproval?.summary ?? event.content.map(c => c.type === "text" ? c.text : "").join("");
+			const cleaned = summary.replace(/\n## question[\s\S]*$/, "");
+			const confirmed = await ctx.ui.confirm(
+				"pi-workflow",
+				`Approve starting "${nextStage.replace(/-/g, " ")}"?\n${cleaned}\n\nApprove to proceed?`,
+			);
+			if (confirmed) {
+				state.pendingPreApproval = null;
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `PRE-APPROVED ${nextStage} — director may now call wf_stage_start("${nextStage}")` }],
+				};
+			} else {
+				// Reject: reset completed stage to in-progress
+				state.stages[completedStage as keyof typeof state.stages].status = "in-progress";
+				state.current = completedStage;
+				state.pendingPreApproval = null;
+				saveState(state);
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## pre-approval rejection (UI): ${nextStage} @ ${details.sha?.slice(0, 7) ?? "?"}\nrejected via TUI confirm dialog\n`,
+				);
+				return {
+					content: [{ type: "text", text: `REJECTED ${nextStage} — reset ${completedStage} to in-progress` }],
+				};
+			}
+		}
+
+		if (details.decision === "AWAITING_HUMAN") {
+			// P3 gate: stage needs human approval before marking done
+			const stage = details.stage! as Stage;
+			const sha = details.sha!;
+			const summary = state.pendingApproval?.summary ?? event.content.map(c => c.type === "text" ? c.text : "").join("");
+			const cleaned = summary.replace(/\n## question[\s\S]*$/, "");
+			const confirmed = await ctx.ui.confirm(
+				"pi-workflow",
+				`Approve "${stage.replace(/-/g, " ")}"?\n${cleaned}\n\nApprove to proceed?`,
+			);
+			if (confirmed) {
+				state.stages[stage].status = "done";
+				state.stages[stage].sha = sha;
+				state.pendingApproval = null;
+				// Cascade: check if NEXT stage also needs pre-approval (same logic for wf_stage_complete and wf_approve)
+				const nxt = nextGateStage(state, stage);
+				if (nxt && requirePreApprovalSet().has(nxt)) {
+					const artifactList = ARTIFACT_FOR_STAGE[stage].join(", ") || "source code";
+					const cascadeSummary = [
+						`## completed: ${stage}`,
+						`- artifact(s): ${artifactList}`,
+						`- sha: ${sha.slice(0, 7)}`,
+						`## next stage: ${nxt}`,
+						`- role: ${ROLE_FOR_STAGE[nxt]}`,
+						`- expected artifacts: ${ARTIFACT_FOR_STAGE[nxt].join(", ") || "source code"}`,
+						`## question`,
+						`- approve starting ${nxt}? call wf_continue(stage="${nxt}", verdict="approve"|"reject", note?)`,
+					].join("\n");
+					state.pendingPreApproval = { nextStage: nxt, completedStage: stage, sha, summary: cascadeSummary };
+					state.current = null;
+					saveState(state);
+					const cascadeCleaned = cascadeSummary.replace(/\n## question[\s\S]*$/, "");
+					const cascadeConfirmed = await ctx.ui.confirm(
+						"pi-workflow",
+						`Approve starting "${nxt.replace(/-/g, " ")}"?\n${cascadeCleaned}\n\nApprove to proceed?`,
+					);
+					if (cascadeConfirmed) {
+						state.pendingPreApproval = null;
+						saveState(state);
+						return {
+							content: [{ type: "text", text: `APPROVED (human) ${stage} @ ${sha.slice(0, 7)}\nPRE-APPROVED ${nxt} — director may now call wf_stage_start("${nxt}")` }],
+						};
+					} else {
+						state.stages[stage].status = "in-progress";
+						state.current = stage;
+						state.pendingPreApproval = null;
+						saveState(state);
+						fs.appendFileSync(
+							path.join(artifactsDir(), "decisions.md"),
+							`\n## pre-approval rejection (UI cascade): ${nxt} @ ${sha.slice(0, 7)}\nrejected via TUI confirm dialog\n`,
+						);
+						return {
+							content: [{ type: "text", text: `REJECTED ${nxt} — reset ${stage} to in-progress` }],
+						};
+					}
+				}
+				state.current = nxt;
+				saveState(state);
+				return {
+					content: [{ type: "text", text: `APPROVED (human) ${stage} @ ${sha.slice(0, 7)}` }],
+				};
+			} else {
+				state.stages[stage].status = "in-progress";
+				state.pendingApproval = null;
+				saveState(state);
+				fs.appendFileSync(
+					path.join(artifactsDir(), "decisions.md"),
+					`\n## human rejection (UI): ${stage} @ ${sha.slice(0, 7)}\nrejected via TUI confirm dialog\n`,
+				);
+				return {
+					content: [{ type: "text", text: `REJECTED ${stage} — reset to in-progress` }],
 				};
 			}
 		}
