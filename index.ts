@@ -71,15 +71,11 @@ import { registerKnowledgeTools } from "./tools/knowledge.ts";
 import { registerLifecycleTools } from "./tools/lifecycle.ts";
 import { registerStageTools } from "./tools/stages.ts";
 import { registerStatusTools } from "./tools/status.ts";
-import { showDashboard } from "./lib/config.ts";
-import { collectDashboard, invalidateDashboardCache, renderDashboard, renderCompactDashboard, renderOverlayPanel, type DashboardTheme } from "./lib/dashboard.ts";
-import { truncLine } from "./lib/trunc.ts";
+import { collectDashboard, invalidateDashboardCache, renderOverlayPanel, type DashboardTheme } from "./lib/dashboard.ts";
 
-// ---- dashboard toggle - in-memory, survives within session ----
-type DashMode = "hidden" | "compact" | "full";
-let _dashMode: DashMode = showDashboard() ? "compact" : "hidden";
-function dashMode(): DashMode { return _dashMode; }
-function setDashMode(v: DashMode) { _dashMode = v; }
+// ---- dashboard overlay guard (prevent double-open) ----
+let _overlayOpen = false;
+let _overlayDone: ((v?: undefined) => void) | null = null;
 
 export default function (pi: ExtensionAPI) {
 	installSubagentTool(pi);
@@ -91,117 +87,97 @@ export default function (pi: ExtensionAPI) {
 	registerKnowledgeTools(pi);
 	registerBusTools(pi);
 
-	// ---- wf_dashboard tool: toggle/expand/overlay the workflow dashboard ----
+	// ---- wf_dashboard tool: query state or open floating overlay ----
 	pi.registerTool({
 		name: "wf_dashboard",
 		label: "wf_dashboard",
-		description: "Control the workflow dashboard widget. Toggle visibility, expand/collapse between compact 1-line and full detail, or open a floating overlay panel. Shows role, stage pipeline, artifacts, in-flight subagents, and git changes.",
+		description: "Query workflow dashboard state, or open a floating overlay panel (dismiss with Esc). Shows role, stage pipeline, artifacts, in-flight subagents, and git changes.",
 		parameters: Type.Object({
-			toggle: Type.Optional(Type.Boolean({ description: "true = show widget, false = hide entirely" })),
-			expand: Type.Optional(Type.Boolean({ description: "true = expand to full 5-line detail, false = collapse to 1-line compact" })),
 			overlay: Type.Optional(Type.Boolean({ description: "true = open floating overlay panel (dismiss with Esc)" })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const d = collectDashboard();
 
-			// Handle overlay: open a floating panel that blocks until dismissed
+			// Handle overlay: open floating panel, blocks until dismissed
 			if (params.overlay === true) {
+				if (_overlayOpen) {
+					return { content: [{ type: "text", text: "dashboard overlay already open" }], details: { ...d } };
+				}
 				if (!ctx?.ui) {
-					// Headless: fall back to returning text summary
 					return {
-						content: [{ type: "text", text: `dashboard overlay not available (no UI). role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
+						content: [{ type: "text", text: `dashboard (headless). role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
 						details: { ...d },
 					};
 				}
-				await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
-					const panelW = Math.min(52, process.stdout.columns - 2);
-					return {
-						render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
-						handleInput: (data: string) => {
-							// Escape closes the overlay
-							if (data === "\x1b") done(undefined);
-						},
-						invalidate: () => { invalidateDashboardCache(); },
-					};
-				}, { overlay: true, overlayOptions: { anchor: "right-center", width: 52, offsetX: -1 } });
+				_overlayOpen = true;
+				try {
+					await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
+						_overlayDone = done;
+						const panelW = Math.min(52, process.stdout.columns - 2);
+						return {
+							render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
+							handleInput: (data: string) => {
+								if (data === "\x1b") done(undefined);
+							},
+							invalidate: () => { invalidateDashboardCache(); },
+						};
+					}, { overlay: true, overlayOptions: { anchor: "right-center", width: 52, offsetX: -1 } });
+				} finally {
+					_overlayOpen = false;
+					_overlayDone = null;
+				}
 				return {
-					content: [{ type: "text", text: `dashboard overlay dismissed. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length}` }],
+					content: [{ type: "text", text: `dashboard closed. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length}` }],
 					details: { ...d },
-				};
-			}
-
-			// Handle toggle (show/hide)
-			if (params.toggle !== undefined) {
-				setDashMode(params.toggle ? "compact" : "hidden");
-				return {
-					content: [{ type: "text", text: params.toggle ? "dashboard ON (compact 1-line)" : "dashboard OFF — widget hidden" }],
-					details: { mode: dashMode() },
-				};
-			}
-
-			// Handle expand/collapse
-			if (params.expand !== undefined) {
-				setDashMode(params.expand ? "full" : "compact");
-				return {
-					content: [{ type: "text", text: params.expand ? "dashboard expanded to full detail" : "dashboard collapsed to compact 1-line" }],
-					details: { mode: dashMode() },
 				};
 			}
 
 			// Query mode: return current state
 			return {
-				content: [{ type: "text", text: `dashboard mode=${dashMode()}. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
-				details: { mode: dashMode(), ...d },
+				content: [{ type: "text", text: `role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
+				details: { ...d },
 			};
 		},
 	});
 
-	// ---- dashboard widget registration ----
-	pi.on("session_start", async (_event, ctx) => {
-		if (!ctx.hasUI) return;
-		setDashMode(showDashboard() ? "compact" : "hidden"); // reset from config on each session start
-
-		ctx.ui.setWidget("pi-workflow-dashboard", (_tui, theme) => {
-			return {
-				render: (_width: number) => {
-					const mode = dashMode();
-					if (mode === "hidden") return [];
-					try {
-						const d = collectDashboard();
-						if (!d.active) {
-							if (mode === "compact") return [];
-							return [truncLine(theme.fg("dim", "pi-workflow: idle (set PI_WORKFLOW_ROLE or load wf-director skill)"), _width)];
-						}
-						if (mode === "compact") return renderCompactDashboard(d, _width, theme as DashboardTheme);
-						return renderDashboard(d, _width, theme as DashboardTheme);
-					} catch (e) {
-						return [truncLine(theme.fg("error", `pi-workflow dashboard error: ${(e as Error).message}`), _width)];
-					}
-				},
-				invalidate: () => {
-					invalidateDashboardCache();
-				},
-			};
-		});
-	});
+	// ---- helper: toggle the dashboard overlay (shared by command + shortcut) ----
+	async function toggleDashOverlay(ctx: any) {
+		// If overlay is open, dismiss it
+		if (_overlayOpen && _overlayDone) {
+			_overlayDone(undefined);
+			return;
+		}
+		if (_overlayOpen) return; // already open but no done ref (shouldn't happen)
+		if (!ctx?.ui) return;
+		const d = collectDashboard();
+		_overlayOpen = true;
+		try {
+			await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
+				_overlayDone = done;
+				const panelW = Math.min(52, process.stdout.columns - 2);
+				return {
+					render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
+					handleInput: (data: string) => {
+						if (data === "\x1b") done(undefined);
+					},
+					invalidate: () => { invalidateDashboardCache(); },
+				};
+			}, { overlay: true, overlayOptions: { anchor: "right-center", width: 52, offsetX: -1 } });
+		} finally {
+			_overlayOpen = false;
+			_overlayDone = null;
+		}
+	}
 
 	// ---- user command: /dash ----
 	pi.registerCommand("dash", {
-		description: "Cycle dashboard mode: hidden → compact → full → hidden",
-		handler: async (_args, ctx) => {
-			const next: Record<DashMode, DashMode> = { hidden: "compact", compact: "full", full: "hidden" };
-			setDashMode(next[dashMode()]);
-			ctx.ui?.notify(`Dashboard: ${dashMode()}`, "info");
-		},
+		description: "Toggle workflow dashboard overlay",
+		handler: async (_args, ctx) => { await toggleDashOverlay(ctx); },
 	});
 
-	// ---- keyboard shortcut: Ctrl+Alt+D toggles dashboard visibility ----
+	// ---- keyboard shortcut: Ctrl+Alt+D toggles dashboard overlay ----
 	pi.registerShortcut(Key.ctrlAlt("d"), {
-		description: "Toggle workflow dashboard (hidden ↔ compact ↔ full)",
-		handler: async (ctx) => {
-			const next: Record<DashMode, DashMode> = { hidden: "compact", compact: "full", full: "hidden" };
-			setDashMode(next[dashMode()]);
-			ctx.ui?.notify(`Dashboard: ${dashMode()}`, "info");
-		},
+		description: "Toggle workflow dashboard overlay",
+		handler: async (ctx) => { await toggleDashOverlay(ctx); },
 	});
 }
