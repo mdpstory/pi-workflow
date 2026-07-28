@@ -225,7 +225,7 @@ During `implementation` stage, Director can dispatch **parallel Engineer subagen
 1. Discuss scope first: present the task graph you intend to run and what is out of scope, hear
    the user, then `wf_discuss({ topic: "impl-scope", proposal, userSaid, decision })`. Only then
    `wf_stage_start implementation` — it is denied below 2 discussion entries.
-2. **Task graph scheduling**: read `wf_artifact_summary tasks.md` (or the full file if needed) to identify all tasks with 0 pending dependencies (e.g. `T1` and `T2` independent).
+2. **Task graph scheduling**: read `wf_artifact_summary tasks.md` (or the full file if needed) to identify all tasks with 0 pending dependencies (e.g. `T1` and `T2` independent). **If multiple independent tasks exist, prefer dispatching them in parallel when possible.** Use one `subagent({ tasks: [...] })` call with all queued tasks, or fire individual dispatches together. Only fall back to sequential when parallel is impractical (shared mutable state, strict ordering, or resource constraints).
 3. **Dispatch parallel engineers**, each with its own `wf_knowledge_get`-sourced context, not a shared dump:
    ```ts
    subagent({
