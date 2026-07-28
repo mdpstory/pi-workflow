@@ -35,6 +35,8 @@ export const Type = {
 	const hooks = new Map();
 	const api = {
 		registerTool: (t) => tools.set(t.name, t),
+		registerCommand: () => {},
+		registerShortcut: () => {},
 		on: (name, fn) => {
 			if (!hooks.has(name)) hooks.set(name, []);
 			hooks.get(name).push(fn);

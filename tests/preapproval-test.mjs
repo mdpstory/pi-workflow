@@ -34,7 +34,7 @@ export const Type = {
 fs.writeFileSync("__stub_pi_agent.mjs", "export {};");
 
 const tools = new Map();
-const api = { registerTool: (t) => tools.set(t.name, t), on: () => {} };
+const api = { registerTool: (t) => tools.set(t.name, t), registerCommand: () => {}, registerShortcut: () => {}, on: () => {} };
 const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
 	alias: {

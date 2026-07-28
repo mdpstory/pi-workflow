@@ -20,6 +20,8 @@ const tools = new Map();
 const hooks = new Map();
 const api = {
 	registerTool(t) { tools.set(t.name, t); },
+	registerCommand() {},
+	registerShortcut() {},
 	on(event, fn) { hooks.set(event, fn); },
 };
 

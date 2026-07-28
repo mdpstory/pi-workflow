@@ -9,7 +9,7 @@ import { ARTIFACT_MDS } from "../lib/constants.ts";
 import { claimRole, currentSessionId, markerPath, mintId, requireDirector, setSessionId, workflowId } from "../lib/identity.ts";
 import { lockLiveness, type LockInfo, readLock, acquireOrCheckLock } from "../lib/lock.ts";
 import { readJson, writeJson } from "../lib/io.ts";
-import { artifactPath, artifactsDir, clrIndexPath, repoRoot, sharedArtifactsDir } from "../lib/paths.ts";
+import { artifactPath, artifactsDir, clrIndexPath, repoRoot, sharedArtifactsDir, statePath } from "../lib/paths.ts";
 import { deny, ok } from "../lib/reply.ts";
 import { isStubContent, loadClr, loadState, saveState, type WfState } from "../lib/state.ts";
 
@@ -91,13 +91,21 @@ export function registerLifecycleTools(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wf_init",
 		label: "wf_init",
-		description: "Initialize .workflow/ state and stub artifacts. Director only.",
+		description: "Initialize .workflow/ state and stub artifacts. Director only. Blocks if a prior workflow exists with real state unless resume:true is passed (resume must be an explicit choice, never automatic).",
 		parameters: Type.Object({
 			forceReclaimForeignLock: Type.Optional(Type.Boolean({ description: "explicit override to reclaim a lock reported UNKNOWN (foreign host) — only pass this after confirming with the user that no other machine is actually running this workflow" })),
+			resume: Type.Optional(Type.Boolean({ description: "explicitly opt in to resuming an existing workflow. Without this, wf_init refuses if state.json already shows progress (current stage or non-todo stages)." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const denied = requireDirector();
 			if (denied) return deny(denied.msg);
+
+			// (P1-8) Don't auto-resume. If a workflow id resolves to an existing directory
+			// with real state (not just a stub from a prior wf_init that went nowhere),
+			// require an explicit opt-in via resume:true. Otherwise the user might
+			// accidentally resume a killed/abandoned workflow they didn't intend to.
+			const stateExists = fs.existsSync(statePath());
+
 			fs.mkdirSync(artifactsDir(), { recursive: true });
 
 			// (C5) Ask before writing .gitignore (when there's a UI to ask through), and match
@@ -138,6 +146,27 @@ export function registerLifecycleTools(pi: ExtensionAPI) {
 					details: { ok: false, decision: "LOCKED", lock: foreign, liveness },
 				};
 			}
+
+			// (P1-8) Resume gate: if state already has real progress, require explicit opt-in.
+			// Placed AFTER lock check so a live-lock blocks first; after lock is acquired
+			// (or stale lock reclaimed), then we check whether we're resuming without consent.
+			if (stateExists && params.resume !== true) {
+				const prior = loadState();
+				const hasProgress = prior.current !== null || Object.values(prior.stages).some(s => s.status !== "todo");
+				if (hasProgress) {
+					return {
+						content: [{
+							type: "text",
+							text: `Workflow "${workflowId()}" already exists with state (current stage: ${prior.current ?? "none"}). ` +
+								`wf_init will NOT auto-resume a previous workflow. ` +
+								`To resume: call wf_init({ resume: true }). ` +
+								`To start fresh: call wf_new first to mint a new id, then wf_init.`,
+						}],
+						details: { ok: false, decision: "RESUME_REQUIRES_OPT_IN", id: workflowId(), current: prior.current },
+					};
+				}
+			}
+
 			const state = loadState();
 			saveState(state);
 			writeJson(clrIndexPath(), loadClr());
