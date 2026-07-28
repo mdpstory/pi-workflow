@@ -23,7 +23,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { truncateContent, TUI_WIDTH } from "../lib/trunc.ts";
+import { truncateContent, tuiWidth } from "../lib/trunc.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
 	extractPartialStringField,
@@ -47,10 +47,10 @@ const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
 function T(content: string): Text {
-	return new Text(truncateContent(content, TUI_WIDTH), 0, 0);
+	return new Text(truncateContent(content, tuiWidth()), 0, 0);
 }
 function M(content: string, mdTheme: any): Markdown {
-	return new Markdown(truncateContent(content, TUI_WIDTH), 0, 0, mdTheme);
+	return new Markdown(truncateContent(content, tuiWidth()), 0, 0, mdTheme);
 }
 
 function isFailedResult(result: SingleResult): boolean {

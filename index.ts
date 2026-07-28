@@ -72,6 +72,7 @@ import { registerStageTools } from "./tools/stages.ts";
 import { registerStatusTools } from "./tools/status.ts";
 import { showDashboard } from "./lib/config.ts";
 import { collectDashboard, invalidateDashboardCache, renderDashboard, type DashboardTheme } from "./lib/dashboard.ts";
+import { truncLine } from "./lib/trunc.ts";
 
 // ---- dashboard toggle - in-memory, survives within session ----
 let _dashOn = showDashboard();
@@ -124,11 +125,11 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const d = collectDashboard();
 						if (!d.active) {
-							return [theme.fg("dim", "pi-workflow: idle (set PI_WORKFLOW_ROLE or load wf-director skill)")];
+							return [truncLine(theme.fg("dim", "pi-workflow: idle (set PI_WORKFLOW_ROLE or load wf-director skill)"), _width)];
 						}
 						return renderDashboard(d, _width, theme as DashboardTheme);
 					} catch (e) {
-						return [theme.fg("error", `pi-workflow dashboard error: ${(e as Error).message}`)];
+						return [truncLine(theme.fg("error", `pi-workflow dashboard error: ${(e as Error).message}`), _width)];
 					}
 				},
 				invalidate: () => {

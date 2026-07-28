@@ -9,14 +9,14 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { Markdown, Text } from "@earendil-works/pi-tui";
-import { truncateContent, TUI_WIDTH } from "../lib/trunc.ts";
+import { truncateContent, tuiWidth } from "../lib/trunc.ts";
 import type { SingleResult } from "./run.ts";
 
 function T(content: string): Text {
-	return new Text(truncateContent(content, TUI_WIDTH), 0, 0);
+	return new Text(truncateContent(content, tuiWidth()), 0, 0);
 }
 function M(content: string, mdTheme: any): Markdown {
-	return new Markdown(truncateContent(content, TUI_WIDTH), 0, 0, mdTheme);
+	return new Markdown(truncateContent(content, tuiWidth()), 0, 0, mdTheme);
 }
 
 export function formatTokens(count: number): string {
