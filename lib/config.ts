@@ -16,6 +16,7 @@ export interface WfConfig {
 	interceptReads?: boolean; // P1-2: substitute fresh knowledge fragments for full read() bodies
 	autoResolveGateInUi?: boolean; // Fix D: let the TUI dialog resolve a human gate inline (default false)
 	requireDiscussionBeforeImpl?: boolean; // Fix B: block implementation until wf_discuss ran (default true)
+	showDashboard?: boolean; // show workflow dashboard widget above editor (default true)
 }
 export function loadConfig(): WfConfig {
 	const globalPath = path.join(os.homedir(), ".pi", "agent", "pi-workflow.json");
@@ -35,6 +36,7 @@ export function loadConfig(): WfConfig {
 		autoResolveGateInUi: p.autoResolveGateInUi ?? g.autoResolveGateInUi ?? false,
 		// Fix B: default true — director must actually discuss with the user before code lands.
 		requireDiscussionBeforeImpl: p.requireDiscussionBeforeImpl ?? g.requireDiscussionBeforeImpl ?? true,
+		showDashboard: p.showDashboard ?? g.showDashboard ?? true,
 	};
 }
 export function autoResolveGateInUi(): boolean {
@@ -42,6 +44,9 @@ export function autoResolveGateInUi(): boolean {
 }
 export function requireDiscussionBeforeImpl(): boolean {
 	return loadConfig().requireDiscussionBeforeImpl !== false;
+}
+export function showDashboard(): boolean {
+	return loadConfig().showDashboard !== false;
 }
 
 // Stages to auto-skip by default, via skipStages in .pi/pi-workflow.json (or

@@ -61,6 +61,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
 import installSubagentTool from "./subagent/tool.ts";
 import { registerHooks } from "./hooks.ts";
 import { registerBusTools } from "./tools/bus.ts";
@@ -69,6 +70,13 @@ import { registerKnowledgeTools } from "./tools/knowledge.ts";
 import { registerLifecycleTools } from "./tools/lifecycle.ts";
 import { registerStageTools } from "./tools/stages.ts";
 import { registerStatusTools } from "./tools/status.ts";
+import { showDashboard } from "./lib/config.ts";
+import { collectDashboard, invalidateDashboardCache, renderDashboard, type DashboardTheme } from "./lib/dashboard.ts";
+
+// ---- dashboard toggle - in-memory, survives within session ----
+let _dashOn = showDashboard();
+function dashOn(): boolean { return _dashOn; }
+function setDashOn(v: boolean) { _dashOn = v; }
 
 export default function (pi: ExtensionAPI) {
 	installSubagentTool(pi);
@@ -79,4 +87,47 @@ export default function (pi: ExtensionAPI) {
 	registerStatusTools(pi);
 	registerKnowledgeTools(pi);
 	registerBusTools(pi);
+
+	// ---- wf_dashboard tool: toggle or query the dashboard widget ----
+	pi.registerTool({
+		name: "wf_dashboard",
+		label: "wf_dashboard",
+		description: "Toggle the workflow dashboard widget on/off, or query its current state. Shows role, stage pipeline, artifacts, in-flight subagents, and git changes above the editor.",
+		parameters: Type.Object({
+			toggle: Type.Optional(Type.Boolean({ description: "set to true to show, false to hide; omit to just query current state" })),
+		}),
+		async execute(_id, params) {
+			if (params.toggle !== undefined) {
+				setDashOn(params.toggle);
+				return {
+					content: [{ type: "text", text: params.toggle ? "dashboard ON — widget visible above editor" : "dashboard OFF — widget hidden" }],
+					details: { visible: params.toggle },
+				};
+			}
+			const d = collectDashboard();
+			return {
+				content: [{ type: "text", text: `dashboard is ${dashOn() ? "ON" : "OFF"}. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
+				details: { visible: dashOn(), ...d },
+			};
+		},
+	});
+
+	// ---- dashboard widget registration ----
+	pi.on("session_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		setDashOn(showDashboard()); // reset from config on each session start
+
+		ctx.ui.setWidget("pi-workflow-dashboard", (_tui, theme) => {
+			return {
+				render: (_width: number) => {
+					if (!dashOn()) return [];
+					const d = collectDashboard();
+					return renderDashboard(d, _width, theme as DashboardTheme);
+				},
+				invalidate: () => {
+					invalidateDashboardCache();
+				},
+			};
+		});
+	});
 }
