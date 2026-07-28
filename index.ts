@@ -62,7 +62,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
-import { Key } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import installSubagentTool from "./subagent/tool.ts";
 import { registerHooks } from "./hooks.ts";
 import { registerBusTools } from "./tools/bus.ts";
@@ -117,7 +117,7 @@ export default function (pi: ExtensionAPI) {
 						return {
 							render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
 							handleInput: (data: string) => {
-								if (data === "\x1b") done(undefined);
+								if (matchesKey(data, Key.escape)) done(undefined);
 							},
 							invalidate: () => { invalidateDashboardCache(); },
 						};
@@ -158,7 +158,7 @@ export default function (pi: ExtensionAPI) {
 				return {
 					render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
 					handleInput: (data: string) => {
-						if (data === "\x1b") done(undefined);
+						if (matchesKey(data, Key.escape)) done(undefined);
 					},
 					invalidate: () => { invalidateDashboardCache(); },
 				};
