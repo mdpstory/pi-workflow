@@ -10,6 +10,7 @@ import { artifactPath, clrIndexPath } from "./paths.ts";
 import { ARTIFACT_MDS, STAGES, type Stage } from "./constants.ts";
 import { readDiscussion } from "./discussion.ts";
 import { repoRoot } from "./base-paths.ts";
+import { truncLine } from "./trunc.ts";
 
 // ---- types ----
 export interface DashboardTheme {
@@ -174,33 +175,7 @@ const STAGE_SHORT: Record<Stage, string> = {
 	documentation: "docs",
 };
 
-// Truncate a line with ANSI codes to fit within terminal width.
-// Uses simple visual-width approximation — ANSI escapes consume 0 columns.
-function truncLine(line: string, width: number): string {
-	// Strip ANSI SGR sequences to measure visible width
-	const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
-	if (stripped.length <= width) return line;
-	// Keep as much as possible, ellipsis at end
-	let visible = 0;
-	let out = "";
-	for (let i = 0; i < line.length; i++) {
-		if (line[i] === "\x1b" && line[i + 1] === "[") {
-			// Consume escape sequence
-			let j = i + 2;
-			while (j < line.length && line[j] !== "m") j++;
-			out += line.slice(i, j + 1);
-			i = j;
-			continue;
-		}
-		if (visible >= width - 1) {
-			out += "…";
-			break;
-		}
-		out += line[i];
-		visible++;
-	}
-	return out;
-}
+
 
 export function renderDashboard(d: DashboardData, width: number, theme: DashboardTheme): string[] {
 	if (!d.active) return [];

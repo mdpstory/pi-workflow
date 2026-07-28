@@ -9,7 +9,15 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { Markdown, Text } from "@earendil-works/pi-tui";
+import { truncateContent, TUI_WIDTH } from "../lib/trunc.ts";
 import type { SingleResult } from "./run.ts";
+
+function T(content: string): Text {
+	return new Text(truncateContent(content, TUI_WIDTH), 0, 0);
+}
+function M(content: string, mdTheme: any): Markdown {
+	return new Markdown(truncateContent(content, TUI_WIDTH), 0, 0, mdTheme);
+}
 
 export function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -198,7 +206,7 @@ export function renderToolCallDetail(
 	if (name === "write") {
 		const filePath = (args.file_path || args.path || "") as string;
 		const content = (args.content ?? "") as string;
-		if (content) out.push(new Markdown(`\`\`\`${langForPath(filePath)}\n${content}\n\`\`\``, 0, 0, mdTheme));
+		if (content) out.push(M(`\`\`\`${langForPath(filePath)}\n${content}\n\`\`\``, mdTheme));
 	} else if (name === "edit") {
 		const oldText = (args.old_text || args.oldText || "") as string;
 		const newText = (args.new_text || args.newText || "") as string;
@@ -206,7 +214,7 @@ export function renderToolCallDetail(
 			const lines = simpleDiffLines(oldText, newText).map((l) =>
 				l.startsWith("+") ? theme.fg("success", l) : l.startsWith("-") ? theme.fg("error", l) : l,
 			);
-			if (lines.length) out.push(new Text(lines.join("\n"), 0, 0));
+			if (lines.length) out.push(T(lines.join("\n")));
 		}
 	}
 	return out;
@@ -217,13 +225,13 @@ export function renderLiveBlock(r: SingleResult, theme: any, mdTheme: any): Arra
 	const out: Array<Text | Markdown> = [];
 	if (r.liveToolCall) {
 		const { name, rawArgs } = r.liveToolCall;
-		out.push(new Text(theme.fg("muted", "→ ") + theme.fg("accent", name) + theme.fg("dim", " (writing...)"), 0, 0));
+		out.push(T(theme.fg("muted", "→ ") + theme.fg("accent", name) + theme.fg("dim", " (writing...)")));
 		if (name === "write") {
 			const content = extractPartialStringField(rawArgs, "content");
 			if (content) {
 				const filePath =
 					extractPartialStringField(rawArgs, "file_path") ?? extractPartialStringField(rawArgs, "path") ?? "";
-				out.push(new Markdown(`\`\`\`${langForPath(filePath)}\n${content}▌\n\`\`\``, 0, 0, mdTheme));
+				out.push(M(`\`\`\`${langForPath(filePath)}\n${content}▌\n\`\`\``, mdTheme));
 			}
 		} else if (name === "edit") {
 			const newText = extractPartialStringField(rawArgs, "new_text") ?? extractPartialStringField(rawArgs, "newText");
@@ -232,7 +240,7 @@ export function renderLiveBlock(r: SingleResult, theme: any, mdTheme: any): Arra
 					.split("\n")
 					.map((l) => theme.fg("success", `+ ${l}`))
 					.join("\n");
-				out.push(new Text(`${lines}${theme.fg("dim", "▌")}`, 0, 0));
+				out.push(T(`${lines}${theme.fg("dim", "▌")}`));
 			}
 		}
 	}
