@@ -121,8 +121,15 @@ export default function (pi: ExtensionAPI) {
 			return {
 				render: (_width: number) => {
 					if (!dashOn()) return [];
-					const d = collectDashboard();
-					return renderDashboard(d, _width, theme as DashboardTheme);
+					try {
+						const d = collectDashboard();
+						if (!d.active) {
+							return [theme.fg("dim", "pi-workflow: idle (set PI_WORKFLOW_ROLE or load wf-director skill)")];
+						}
+						return renderDashboard(d, _width, theme as DashboardTheme);
+					} catch (e) {
+						return [theme.fg("error", `pi-workflow dashboard error: ${(e as Error).message}`)];
+					}
 				},
 				invalidate: () => {
 					invalidateDashboardCache();
