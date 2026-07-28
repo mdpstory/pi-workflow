@@ -185,8 +185,8 @@ export default function (pi: ExtensionAPI) {
 		});
 	});
 
-	// ---- user command: /toggle-workflow-dashboard ----
-	pi.registerCommand("toggle-workflow-dashboard", {
+	// ---- user command: /dash ----
+	pi.registerCommand("dash", {
 		description: "Cycle dashboard mode: hidden → compact → full → hidden",
 		handler: async (_args, ctx) => {
 			const next: Record<DashMode, DashMode> = { hidden: "compact", compact: "full", full: "hidden" };
