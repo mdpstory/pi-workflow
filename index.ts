@@ -71,13 +71,14 @@ import { registerLifecycleTools } from "./tools/lifecycle.ts";
 import { registerStageTools } from "./tools/stages.ts";
 import { registerStatusTools } from "./tools/status.ts";
 import { showDashboard } from "./lib/config.ts";
-import { collectDashboard, invalidateDashboardCache, renderDashboard, type DashboardTheme } from "./lib/dashboard.ts";
+import { collectDashboard, invalidateDashboardCache, renderDashboard, renderCompactDashboard, renderOverlayPanel, type DashboardTheme } from "./lib/dashboard.ts";
 import { truncLine } from "./lib/trunc.ts";
 
 // ---- dashboard toggle - in-memory, survives within session ----
-let _dashOn = showDashboard();
-function dashOn(): boolean { return _dashOn; }
-function setDashOn(v: boolean) { _dashOn = v; }
+type DashMode = "hidden" | "compact" | "full";
+let _dashMode: DashMode = showDashboard() ? "compact" : "hidden";
+function dashMode(): DashMode { return _dashMode; }
+function setDashMode(v: DashMode) { _dashMode = v; }
 
 export default function (pi: ExtensionAPI) {
 	installSubagentTool(pi);
@@ -89,26 +90,67 @@ export default function (pi: ExtensionAPI) {
 	registerKnowledgeTools(pi);
 	registerBusTools(pi);
 
-	// ---- wf_dashboard tool: toggle or query the dashboard widget ----
+	// ---- wf_dashboard tool: toggle/expand/overlay the workflow dashboard ----
 	pi.registerTool({
 		name: "wf_dashboard",
 		label: "wf_dashboard",
-		description: "Toggle the workflow dashboard widget on/off, or query its current state. Shows role, stage pipeline, artifacts, in-flight subagents, and git changes above the editor.",
+		description: "Control the workflow dashboard widget. Toggle visibility, expand/collapse between compact 1-line and full detail, or open a floating overlay panel. Shows role, stage pipeline, artifacts, in-flight subagents, and git changes.",
 		parameters: Type.Object({
-			toggle: Type.Optional(Type.Boolean({ description: "set to true to show, false to hide; omit to just query current state" })),
+			toggle: Type.Optional(Type.Boolean({ description: "true = show widget, false = hide entirely" })),
+			expand: Type.Optional(Type.Boolean({ description: "true = expand to full 5-line detail, false = collapse to 1-line compact" })),
+			overlay: Type.Optional(Type.Boolean({ description: "true = open floating overlay panel (dismiss with Esc)" })),
 		}),
-		async execute(_id, params) {
-			if (params.toggle !== undefined) {
-				setDashOn(params.toggle);
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const d = collectDashboard();
+
+			// Handle overlay: open a floating panel that blocks until dismissed
+			if (params.overlay === true) {
+				if (!ctx?.ui) {
+					// Headless: fall back to returning text summary
+					return {
+						content: [{ type: "text", text: `dashboard overlay not available (no UI). role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
+						details: { ...d },
+					};
+				}
+				await ctx.ui.custom<undefined>((_tui, theme, _kb, done) => {
+					const panelW = Math.min(52, process.stdout.columns - 2);
+					return {
+						render: (_w: number) => renderOverlayPanel(d, panelW, theme as DashboardTheme),
+						handleInput: (data: string) => {
+							// Escape closes the overlay
+							if (data === "\x1b") done(undefined);
+						},
+						invalidate: () => { invalidateDashboardCache(); },
+					};
+				}, { overlay: true, overlayOptions: { anchor: "right-center", width: 52, offsetX: -1 } });
 				return {
-					content: [{ type: "text", text: params.toggle ? "dashboard ON — widget visible above editor" : "dashboard OFF — widget hidden" }],
-					details: { visible: params.toggle },
+					content: [{ type: "text", text: `dashboard overlay dismissed. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length}` }],
+					details: { ...d },
 				};
 			}
-			const d = collectDashboard();
+
+			// Handle toggle (show/hide)
+			if (params.toggle !== undefined) {
+				setDashMode(params.toggle ? "compact" : "hidden");
+				return {
+					content: [{ type: "text", text: params.toggle ? "dashboard ON (compact 1-line)" : "dashboard OFF — widget hidden" }],
+					details: { mode: dashMode() },
+				};
+			}
+
+			// Handle expand/collapse
+			if (params.expand !== undefined) {
+				setDashMode(params.expand ? "full" : "compact");
+				return {
+					content: [{ type: "text", text: params.expand ? "dashboard expanded to full detail" : "dashboard collapsed to compact 1-line" }],
+					details: { mode: dashMode() },
+				};
+			}
+
+			// Query mode: return current state
 			return {
-				content: [{ type: "text", text: `dashboard is ${dashOn() ? "ON" : "OFF"}. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
-				details: { visible: dashOn(), ...d },
+				content: [{ type: "text", text: `dashboard mode=${dashMode()}. role=${d.role} stage=${d.currentStage ?? "—"} inflight=${d.inflightCount} arts=${d.artifacts.filter(a=>a.written&&!a.stub).length} wf=${d.workflowId.slice(0,8)}` }],
+				details: { mode: dashMode(), ...d },
 			};
 		},
 	});
@@ -116,17 +158,20 @@ export default function (pi: ExtensionAPI) {
 	// ---- dashboard widget registration ----
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		setDashOn(showDashboard()); // reset from config on each session start
+		setDashMode(showDashboard() ? "compact" : "hidden"); // reset from config on each session start
 
 		ctx.ui.setWidget("pi-workflow-dashboard", (_tui, theme) => {
 			return {
 				render: (_width: number) => {
-					if (!dashOn()) return [];
+					const mode = dashMode();
+					if (mode === "hidden") return [];
 					try {
 						const d = collectDashboard();
 						if (!d.active) {
+							if (mode === "compact") return [];
 							return [truncLine(theme.fg("dim", "pi-workflow: idle (set PI_WORKFLOW_ROLE or load wf-director skill)"), _width)];
 						}
+						if (mode === "compact") return renderCompactDashboard(d, _width, theme as DashboardTheme);
 						return renderDashboard(d, _width, theme as DashboardTheme);
 					} catch (e) {
 						return [truncLine(theme.fg("error", `pi-workflow dashboard error: ${(e as Error).message}`), _width)];

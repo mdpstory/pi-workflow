@@ -583,6 +583,7 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 								);
 							}
 						}
+						for (const live of renderLiveBlock(r, theme, mdTheme)) container.addChild(live);
 
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
@@ -611,8 +612,17 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 					const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
-					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-					else text += `\n${renderDisplayItems(displayItems, 5)}`;
+					if (displayItems.length === 0 && !r.liveToolCall) text += `\n${theme.fg("muted", "(no output)")}`;
+					else if (displayItems.length) text += `\n${renderDisplayItems(displayItems, 5)}`;
+					if (r.liveToolCall) {
+						const preview =
+							extractPartialStringField(r.liveToolCall.rawArgs, "content") ??
+							extractPartialStringField(r.liveToolCall.rawArgs, "new_text") ??
+							extractPartialStringField(r.liveToolCall.rawArgs, "newText") ??
+							"";
+						const lastLine = preview.split("\n").slice(-1)[0].slice(-70);
+						text += `\n${theme.fg("muted", "→ ") + theme.fg("accent", r.liveToolCall.name)}${theme.fg("dim", ` writing... ${lastLine}▌`)}`;
+					}
 				}
 				const usageStr = formatUsageStats(aggregateUsage(details.results));
 				if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
@@ -663,6 +673,7 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 								);
 							}
 						}
+						for (const live of renderLiveBlock(r, theme, mdTheme)) container.addChild(live);
 
 						if (finalOutput) {
 							container.addChild(new Spacer(1));
@@ -692,9 +703,18 @@ export default function registerSubagentTool(pi: ExtensionAPI) {
 								: theme.fg("success", "✓");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
-					if (displayItems.length === 0)
+					if (displayItems.length === 0 && !r.liveToolCall)
 						text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
-					else text += `\n${renderDisplayItems(displayItems, 5)}`;
+					else if (displayItems.length) text += `\n${renderDisplayItems(displayItems, 5)}`;
+					if (r.liveToolCall) {
+						const preview =
+							extractPartialStringField(r.liveToolCall.rawArgs, "content") ??
+							extractPartialStringField(r.liveToolCall.rawArgs, "new_text") ??
+							extractPartialStringField(r.liveToolCall.rawArgs, "newText") ??
+							"";
+						const lastLine = preview.split("\n").slice(-1)[0].slice(-70);
+						text += `\n${theme.fg("muted", "→ ") + theme.fg("accent", r.liveToolCall.name)}${theme.fg("dim", ` writing... ${lastLine}▌`)}`;
+					}
 				}
 				if (!isRunning) {
 					const usageStr = formatUsageStats(aggregateUsage(details.results));

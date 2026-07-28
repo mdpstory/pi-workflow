@@ -405,6 +405,7 @@ export async function runSingleAgent(
 						}
 						case "toolcall_end":
 							result.liveToolCall = undefined;
+							emitUpdate(result);
 							break;
 					}
 					return;

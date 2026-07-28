@@ -127,10 +127,19 @@ export function formatToolCall(
  * instead of throwing on invalid JSON.
  */
 export function extractPartialStringField(raw: string, field: string): string | undefined {
-	const marker = `"${field}":"`;
-	const start = raw.indexOf(marker);
-	if (start === -1) return undefined;
-	let i = start + marker.length;
+	// Find the key, then skip optional whitespace around the colon (`"key" : "val"`).
+	const key = `"${field}"`;
+	const keyStart = raw.indexOf(key);
+	if (keyStart === -1) return undefined;
+	let i = keyStart + key.length;
+	// skip whitespace after key name
+	while (i < raw.length && (raw[i] === " " || raw[i] === "\t" || raw[i] === "\n" || raw[i] === "\r")) i++;
+	if (raw[i] !== ":") return undefined; // not a value assignment
+	i++;
+	// skip whitespace after colon
+	while (i < raw.length && (raw[i] === " " || raw[i] === "\t" || raw[i] === "\n" || raw[i] === "\r")) i++;
+	if (raw[i] !== '"') return undefined; // value is not a string
+	i++;
 	let out = "";
 	while (i < raw.length) {
 		const ch = raw[i];
@@ -179,8 +188,8 @@ export function langForPath(filePath: string): string {
 
 /** Simple line-based diff (LCS-free, longest-common-prefix/suffix trim) good enough for a live preview. */
 export function simpleDiffLines(oldText: string, newText: string): string[] {
-	const oldLines = oldText.split("\n");
-	const newLines = newText.split("\n");
+	const oldLines = oldText ? oldText.split("\n") : [];
+	const newLines = newText ? newText.split("\n") : [];
 	let start = 0;
 	while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
 	let endOld = oldLines.length;
