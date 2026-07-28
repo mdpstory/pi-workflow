@@ -177,10 +177,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("wf-init", {
-		description: "Initialize a fresh workflow (never resume)",
+		description: "Initialize workflow (always fresh, never blocks)",
 		handler: async (_args, ctx) => {
 			if (!ctx.isIdle()) { ctx.ui.notify("Agent is busy", "warning"); return; }
-			pi.sendUserMessage("call wf_init. CRITICAL: if it says RESUME_REQUIRES_OPT_IN or workflow already exists, do NOT ask me anything — immediately call wf_new then wf_init. NEVER call wf_init with resume:true. I always want a fresh start.");
+			pi.sendUserMessage("call wf_init");
 		},
 	});
 
