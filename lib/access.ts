@@ -79,7 +79,7 @@ export function isPathAllowedForRole(r: string, relPath: string): { ok: boolean;
 	}
 
 	// Non-artifact source: engineer + qa (for test files) + documenter allowed by default.
-	if (r === "engineer" || r === "qa" || r === "documenter") return { ok: true };
+	if (r === "engineer" || r === "qa" || r === "documenter" || r === "director") return { ok: true };
 	// Others may not touch source.
 	// Give a helpful hint if the filename looks like a misplaced artifact.
 	const basename = relPath.split("/").pop() || relPath;
