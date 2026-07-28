@@ -32,13 +32,10 @@ function gitSummary(): string {
 	if (_gitCache && now - _gitCache.ts < GIT_CACHE_MS) return _gitCache.text;
 	try {
 		const root = repoRoot();
-		const branch = execSync("git branch --show-current", { cwd: root, encoding: "utf8", timeout: 2000 }).trim();
-		const stat = execSync("git diff --stat -- . ':!.workflow/'", { cwd: root, encoding: "utf8", timeout: 2000 }).trim();
-		const untracked = execSync("git ls-files --others --exclude-standard -- . ':!.workflow/'", {
-			cwd: root,
-			encoding: "utf8",
-			timeout: 2000,
-		}).trim();
+		const gitOpts = { cwd: root, encoding: "utf8" as const, timeout: 2000, stdio: ["ignore", "pipe", "pipe"] as const };
+		const branch = execSync("git branch --show-current", gitOpts).trim();
+		const stat = execSync("git diff --stat -- . ':!.workflow/'", gitOpts).trim();
+		const untracked = execSync("git ls-files --others --exclude-standard -- . ':!.workflow/'", gitOpts).trim();
 		const parts: string[] = [];
 		if (branch) parts.push(`branch:${branch}`);
 		if (stat) {
