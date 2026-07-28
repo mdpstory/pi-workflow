@@ -140,11 +140,16 @@ export function registerHooks(pi: ExtensionAPI) {
 		// the next stage (or even check status) and needs a process restart (P0-2).
 		const HARD_STOP_EXEMPT = ["wf_clr_open", "wf_msg_post", "wf_stage_start", "wf_stage_complete", "wf_status"];
 		const CEILING_EXEMPT = ["write", "edit", "wf_clr_open", "wf_msg_post", "intercom"];
+		// Soft ceiling (50 calls): subagents only — the "notify Director" message makes no
+		// sense for the director itself. Director is exempt from the soft cap; it still
+		// bumps the counter so subagent dispatches inherit a warmed budget context, but
+		// the director's own tool calls never trigger the subagent-targeted message.
+		const isDirector = role() === "director";
 		if (workflowActive() && toolCalls > TOOL_CAP + 5) {
 			if (!HARD_STOP_EXEMPT.includes(event.toolName)) {
 				return { block: true, reason: `pi-workflow: hard stop at ${toolCalls} tool calls. Director must reassign.` };
 			}
-		} else if (workflowActive() && toolCalls > TOOL_CAP) {
+		} else if (workflowActive() && !isDirector && toolCalls > TOOL_CAP) {
 			if (!CEILING_EXEMPT.includes(event.toolName)) {
 				return {
 					block: true,
