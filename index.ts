@@ -62,6 +62,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@earendil-works/pi-ai";
+import { Key } from "@earendil-works/pi-tui";
 import installSubagentTool from "./subagent/tool.ts";
 import { registerHooks } from "./hooks.ts";
 import { registerBusTools } from "./tools/bus.ts";
@@ -182,5 +183,25 @@ export default function (pi: ExtensionAPI) {
 				},
 			};
 		});
+	});
+
+	// ---- user command: /toggle-workflow-dashboard ----
+	pi.registerCommand("toggle-workflow-dashboard", {
+		description: "Cycle dashboard mode: hidden → compact → full → hidden",
+		handler: async (_args, ctx) => {
+			const next: Record<DashMode, DashMode> = { hidden: "compact", compact: "full", full: "hidden" };
+			setDashMode(next[dashMode()]);
+			ctx.ui?.notify(`Dashboard: ${dashMode()}`, "info");
+		},
+	});
+
+	// ---- keyboard shortcut: Ctrl+Alt+D toggles dashboard visibility ----
+	pi.registerShortcut(Key.ctrlAlt("d"), {
+		description: "Toggle workflow dashboard (hidden ↔ compact ↔ full)",
+		handler: async (ctx) => {
+			const next: Record<DashMode, DashMode> = { hidden: "compact", compact: "full", full: "hidden" };
+			setDashMode(next[dashMode()]);
+			ctx.ui?.notify(`Dashboard: ${dashMode()}`, "info");
+		},
 	});
 }
