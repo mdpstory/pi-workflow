@@ -5,7 +5,7 @@ import { wfNamespaceRel, isPathAllowedForRole, isPathReadableByRole } from "./li
 import { bumpToolCalls, currentToolCalls, currentToolCap, resetToolCalls } from "./lib/ceiling.ts";
 import { autoResolveGateInUi, loadConfig } from "./lib/config.ts";
 import * as fs from "node:fs";
-import { artifactPath, artifactsDir, clrIndexPath, relFromRepo, sharedArtifactsDir } from "./lib/paths.ts";
+import { artifactPath, artifactsDir, clrIndexPath, relFromRepo, sharedArtifactsDir, statePath } from "./lib/paths.ts";
 import { mintId, role, setSessionId, workflowActive } from "./lib/identity.ts";
 import { freshFragments } from "./lib/knowledge.ts";
 import { clrBlocksStage, isStubContent, loadClr, loadState, saveState } from "./lib/state.ts";
@@ -210,8 +210,8 @@ export function registerHooks(pi: ExtensionAPI) {
 
 		if (event.toolName !== "write" && event.toolName !== "edit") return undefined;
 
-		// No role active — untouched casual session. See workflowActive().
-		if (!workflowActive()) return undefined;
+		// No role active or wf_init not yet called — untouched session.
+		if (!workflowActive() || !fs.existsSync(statePath())) return undefined;
 
 		const p = (event.input as { path?: string }).path;
 		if (!p) return undefined;
