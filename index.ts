@@ -169,10 +169,44 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ---- user command: /wf-dash ----
+	// ---- user commands ----
+
 	pi.registerCommand("wf-dash", {
 		description: "Toggle workflow dashboard overlay",
 		handler: async (_args, ctx) => { await toggleDashOverlay(ctx); },
+	});
+
+	pi.registerCommand("wf-init", {
+		description: "Initialize workflow",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle()) { ctx.ui.notify("Agent is busy", "warning"); return; }
+			pi.sendUserMessage("call wf_init");
+		},
+	});
+
+	pi.registerCommand("wf-new", {
+		description: "Mint a new workflow id",
+		handler: async (args, ctx) => {
+			if (!ctx.isIdle()) { ctx.ui.notify("Agent is busy", "warning"); return; }
+			const label = args.trim() ? ` with label "${args.trim()}"` : "";
+			pi.sendUserMessage(`call wf_new${label}`);
+		},
+	});
+
+	pi.registerCommand("wf-resume", {
+		description: "Resume existing workflow",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle()) { ctx.ui.notify("Agent is busy", "warning"); return; }
+			pi.sendUserMessage("call wf_init with resume: true");
+		},
+	});
+
+	pi.registerCommand("wf-list", {
+		description: "List all workflows",
+		handler: async (_args, ctx) => {
+			if (!ctx.isIdle()) { ctx.ui.notify("Agent is busy", "warning"); return; }
+			pi.sendUserMessage("call wf_list");
+		},
 	});
 
 	// ---- keyboard shortcut: Ctrl+Alt+D toggles dashboard overlay ----
