@@ -5,12 +5,15 @@ import { wfNamespaceRel, isPathAllowedForRole, isPathReadableByRole } from "./li
 import { bumpToolCalls, currentToolCalls, currentToolCap, resetToolCalls } from "./lib/ceiling.ts";
 import { autoResolveGateInUi, loadConfig } from "./lib/config.ts";
 import * as fs from "node:fs";
-import { artifactPath, relFromRepo } from "./lib/paths.ts";
-import { role, workflowActive } from "./lib/identity.ts";
+import { artifactPath, artifactsDir, clrIndexPath, relFromRepo, sharedArtifactsDir } from "./lib/paths.ts";
+import { mintId, role, setSessionId, workflowActive } from "./lib/identity.ts";
 import { freshFragments } from "./lib/knowledge.ts";
-import { clrBlocksStage, loadClr, loadState, saveState } from "./lib/state.ts";
+import { clrBlocksStage, isStubContent, loadClr, loadState, saveState } from "./lib/state.ts";
 import { resolveApproval, resolvePreApproval } from "./lib/gates.ts";
-import type { Stage } from "./lib/constants.ts";
+import { ARTIFACT_MDS, type Stage } from "./lib/constants.ts";
+import { writeJson } from "./lib/io.ts";
+import { wfRoot } from "./lib/base-paths.ts";
+import * as path from "node:path";
 
 // --- (Fix K) denied-loop detector -------------------------------------------------
 // In-process only (like the tool ceiling): a fresh session starts with a clean slate.
@@ -58,9 +61,47 @@ function isTaskTarget(rel: string): boolean {
 }
 
 export function registerHooks(pi: ExtensionAPI) {
-	// Reset tool counter on session start / switch / reload
-	pi.on("session_start", async (_event, _ctx) => {
+	// Reset tool counter on session start / switch / reload.
+	// On explicit new session (pi /new), also reset workflow state so the user
+	// starts with a clean slate — fresh id, stages all "todo", artifacts re-stubbed.
+	pi.on("session_start", async (event, _ctx) => {
 		resetToolCalls();
+
+		// Only reset workflow on an explicit new session, not on resume/reload.
+		// Skip subagents (they carry PI_WORKFLOW_ROLE env — the director owns the reset).
+		if (event.reason !== "new" || process.env.PI_WORKFLOW_ROLE) return;
+
+		// Mint fresh workflow id, overwrite .active-id marker, reset state + artifacts.
+		const fresh = mintId();
+		setSessionId(fresh);
+		try {
+			fs.mkdirSync(wfRoot(), { recursive: true });
+			fs.writeFileSync(path.join(wfRoot(), ".active-id"), fresh);
+		} catch { /* best-effort */ }
+
+		// Reset workflow state to default (all stages todo, no current stage).
+		const empty = loadState();
+		for (const s of Object.keys(empty.stages)) {
+			empty.stages[s as Stage] = { status: "todo" };
+		}
+		empty.current = null;
+		empty.rulings = {};
+		empty.pendingApproval = null;
+		empty.pendingPreApproval = null;
+		saveState(empty);
+
+		// Clear CLR index.
+		writeJson(clrIndexPath(), { open: [] });
+
+		// Re-stub artifacts.
+		fs.mkdirSync(artifactsDir(), { recursive: true });
+		fs.mkdirSync(sharedArtifactsDir(), { recursive: true });
+		for (const md of ARTIFACT_MDS) {
+			const abs = artifactPath(md);
+			if (!fs.existsSync(abs) || isStubContent(fs.readFileSync(abs, "utf8"))) {
+				fs.writeFileSync(abs, `# ${md.replace(".md", "")}\n\n_empty_\n`);
+			}
+		}
 	});
 
 	// --- tool_call hook: 50-call ceiling + role + CLR gate ---
