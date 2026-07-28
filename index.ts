@@ -169,8 +169,8 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ---- user command: /dash ----
-	pi.registerCommand("dash", {
+	// ---- user command: /wf-dash ----
+	pi.registerCommand("wf-dash", {
 		description: "Toggle workflow dashboard overlay",
 		handler: async (_args, ctx) => { await toggleDashOverlay(ctx); },
 	});
